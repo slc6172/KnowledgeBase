@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/highlight.js/latest/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/highlight.js/latest/styles/atom-one-light.min.css">
+  <?!= include('Stylesheet'); ?>
+</head>
+<body data-initial-article-id="<?= initialArticleId ?>">
+  <header class="topbar">
+    <button id="btn-home" class="topbar__brand" type="button">知識庫</button>
+    <nav class="topbar__nav">
+      <button id="btn-new-article" class="btn btn-primary">新增文章</button>
+      <button id="btn-category-manager" class="btn">分類管理</button>
+      <button id="btn-tag-manager" class="btn">標籤管理</button>
+    </nav>
+  </header>
+
+  <main class="content">
+    <?!= include('ArticleListView'); ?>
+    <?!= include('ArticleDetailView'); ?>
+    <?!= include('ArticleEditorView'); ?>
+    <?!= include('ArticleNotFoundView'); ?>
+    <?!= include('CategoryManagerView'); ?>
+    <?!= include('TagManagerView'); ?>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="auth-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2 class="modal__title">需要密碼</h2>
+      <p class="modal__hint">建立、編輯、刪除這類寫入操作需要密碼,這次瀏覽階段只需要輸入一次。</p>
+      <form id="auth-modal-form">
+        <input type="password" id="auth-modal-input" class="modal__input" autocomplete="current-password" autofocus>
+        <div class="modal__actions">
+          <button type="button" id="auth-modal-cancel" class="btn">取消</button>
+          <button type="submit" class="btn btn-primary">確認</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>

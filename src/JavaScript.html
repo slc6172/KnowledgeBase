@@ -1,0 +1,2381 @@
+<script>
+  /**
+   * 分享連結帶入的文章 id。從 body 的資料屬性讀值,而不是像過去那樣被印進
+   * 這裡的一段變數宣告——資料屬性走的是平台會依情境自動跳脫的樣板標籤,值
+   * 本身不會有機會被解讀成程式碼(細節見 README 已知問題修復紀錄)。沒有帶
+   * 分享連結參數時,屬性值是空字串,轉成 null 讓下面 if (INITIAL_ARTICLE_ID)
+   * 這類判斷維持原本「沒有值就是 falsy」的行為。
+   */
+  var INITIAL_ARTICLE_ID = document.body.dataset.initialArticleId || null;
+
+  /**
+   * 視圖切換——單頁 SPA 風格,不改變網址、不重新整理頁面(F1 決策)。
+   */
+  function showView(name) {
+    document.querySelectorAll('.view').forEach(function (el) {
+      el.classList.toggle('hidden', el.id !== 'view-' + name);
+    });
+  }
+
+  /**
+   * 共用的訊息提示,之後每個視圖的 google.script.run failure handler
+   * 都會呼叫 showError(err.message)。
+   */
+  var toastTimer = null;
+
+  function showToast(message, isError) {
+    var toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.classList.remove('hidden');
+    toast.classList.toggle('toast--error', !!isError);
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toast.classList.add('hidden');
+    }, 4000);
+  }
+
+  function showError(message) {
+    showToast(message, true);
+  }
+
+  /**
+   * 寫入類操作的密碼守門員(對應 callProtected)。
+   * 密碼只存在這個記憶體變數裡,重新整理頁面就會消失——因為整個 app 是不換網址
+   * 的單頁 SPA(F1 決策),正常操作不會重新整理頁面,這個變數的生命週期就等於
+   * 「這次瀏覽階段」,不需要用到 sessionStorage。
+   */
+  var cachedWritePassword = null;
+
+  function promptWritePassword_() {
+    return new Promise(function (resolve, reject) {
+      var overlay = document.getElementById('auth-modal');
+      var form = document.getElementById('auth-modal-form');
+      var input = document.getElementById('auth-modal-input');
+      var cancelBtn = document.getElementById('auth-modal-cancel');
+
+      input.value = '';
+      overlay.classList.remove('hidden');
+      input.focus();
+
+      function cleanup() {
+        overlay.classList.add('hidden');
+        form.removeEventListener('submit', onSubmit);
+        cancelBtn.removeEventListener('click', onCancel);
+      }
+      function onSubmit(e) {
+        e.preventDefault();
+        cleanup();
+        resolve(input.value);
+      }
+      function onCancel() {
+        cleanup();
+        reject(new Error('cancelled'));
+      }
+      form.addEventListener('submit', onSubmit);
+      cancelBtn.addEventListener('click', onCancel);
+    });
+  }
+
+  function getWritePassword_() {
+    if (cachedWritePassword) {
+      return Promise.resolve(cachedWritePassword);
+    }
+    return promptWritePassword_().then(function (password) {
+      cachedWritePassword = password;
+      return password;
+    });
+  }
+
+  /**
+   * 所有寫入類操作(建立/編輯/刪除文章、附件上傳/刪除、分類管理)都改叫這個
+   * 函式,取代直接用 google.script.run 呼叫底層寫入函式的寫法——由它統一經過
+   * callProtected 驗證密碼後再轉呼叫真正的函式(這些底層函式本身也已經改成
+   * 帶底線字首的私有函式,不會再被用戶端直接呼叫到)。讀取類操作
+   * (listArticles、getArticle、searchArticles...)完全不受影響,不經過這裡。
+   *
+   * 密碼錯誤時清掉快取,下次寫入會重新跳出輸入框;使用者在輸入框按「取消」
+   * 則視同一次失敗呼叫 onFailure(不會真的打去後端),讓呼叫端原本的
+   * fail(err) 收尾邏輯(解除按鈕 disable 等)可以直接重用,不用另外處理。
+   */
+  function runProtected(functionName, args, onSuccess, onFailure) {
+    getWritePassword_()
+      .then(function (password) {
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(function (err) {
+            if (err && /密碼錯誤/.test(err.message)) {
+              cachedWritePassword = null;
+            }
+            onFailure(err);
+          })
+          .callProtected(password, functionName, args);
+      })
+      .catch(function () {
+        onFailure({ message: '已取消輸入密碼' });
+      });
+  }
+
+  document.getElementById('btn-home').addEventListener('click', function () {
+    goHome();
+  });
+
+  document.getElementById('btn-article-not-found-home').addEventListener('click', function () {
+    goHome();
+  });
+
+  document.getElementById('btn-new-article').addEventListener('click', function () {
+    resetEditorForm();
+    enterEditor();
+    showView('article-editor');
+  });
+
+  document.getElementById('btn-category-manager').addEventListener('click', function () {
+    showView('category-manager');
+    loadCategoryTree();
+  });
+
+  document.getElementById('btn-tag-manager').addEventListener('click', function () {
+    showView('tag-manager');
+    loadTagManagerList();
+  });
+
+  /**
+   * 文章列表 + 搜尋(ticket 02)
+   */
+  function escapeHtml(value) {
+    var div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+  }
+
+  function formatDate(isoString) {
+    if (!isoString) return '';
+    var d = new Date(isoString);
+    if (isNaN(d.getTime())) return '';
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
+
+  function buildSnippet(contentMd, maxLen) {
+    maxLen = maxLen || 100;
+    var text = (contentMd || '')
+      .replace(/[#*`_>]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen) + '…';
+  }
+
+  function setSearchBusy(isBusy) {
+    var btn = document.getElementById('btn-search');
+    btn.disabled = isBusy;
+    btn.textContent = isBusy ? '搜尋中…' : '搜尋';
+  }
+
+  var selectMode = false;
+  var selectedArticleIds = {};
+  var currentListArticles = [];
+
+  function renderArticleCards(articles) {
+    var container = document.getElementById('article-list-results');
+    container.innerHTML = '';
+    currentListArticles = articles || [];
+
+    if (!articles || articles.length === 0) {
+      container.innerHTML = '<p class="empty-state">沒有符合的文章。</p>';
+      return;
+    }
+
+    articles.forEach(function (article) {
+      var sealClass = article.status === 'published' ? 'seal--published' : 'seal--draft';
+      var sealLabel = article.status === 'published' ? '已發布' : '草稿';
+      var categoryName = (article.categories && article.categories.name) || '未分類';
+      var tagsHtml = (article.tags || [])
+        .map(function (tag) {
+          return '<span class="tag">' + escapeHtml(tag.name) + '</span>';
+        })
+        .join('');
+
+      var card = document.createElement('div');
+      card.className = 'article-card';
+      card.innerHTML =
+        '<div class="article-card__meta">' +
+          '<span class="seal ' + sealClass + '">' + sealLabel + '</span>' +
+          '<span>' + escapeHtml(categoryName) + '</span>' +
+          '<span>' + formatDate(article.updated_at) + '</span>' +
+        '</div>' +
+        '<h3 class="article-card__title">' + escapeHtml(article.title) + '</h3>' +
+        '<p class="article-card__snippet">' + escapeHtml(buildSnippet(article.content_md)) + '</p>' +
+        '<div class="article-card__tags">' + tagsHtml + '</div>';
+
+      // 平常隱藏,不干擾一般點擊進入詳情頁的既有互動——只有勾選模式開啟時才
+      // 插入 checkbox,且用 stopPropagation 避免點 checkbox 也一併觸發卡片
+      // 本身的「開啟詳情頁」點擊事件。
+      if (selectMode) {
+        var checkboxLabel = document.createElement('label');
+        checkboxLabel.className = 'article-card__select';
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !!selectedArticleIds[article.id];
+        checkbox.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (checkbox.checked) {
+            selectedArticleIds[article.id] = true;
+          } else {
+            delete selectedArticleIds[article.id];
+          }
+          updateBatchToolbar();
+        });
+        checkboxLabel.appendChild(checkbox);
+        card.insertBefore(checkboxLabel, card.firstChild);
+      }
+
+      card.addEventListener('click', function () {
+        openArticleDetail(article.id);
+      });
+
+      container.appendChild(card);
+    });
+  }
+
+  function getSelectedStatusFilter() {
+    var select = document.getElementById('list-status-filter');
+    return select ? select.value : 'published';
+  }
+
+  function getSelectedCategoryFilter() {
+    var select = document.getElementById('list-category-filter');
+    return select ? select.value : '';
+  }
+
+  /**
+   * tag-filter/01+02:搜尋列跟純瀏覽共用同一個篩選列(btn-search 的 click
+   * handler 依 search-input 是否有字內部分派給 performSearch/loadArticleList),
+   * 所以標籤篩選只需要掛一份 UI,兩條路徑都讀同一份選取狀態。
+   */
+  var cachedListFilterTags = [];
+
+  function loadListTagFilterCache() {
+    google.script.run
+      .withSuccessHandler(function (tags) { cachedListFilterTags = tags || []; })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listTags();
+  }
+
+  var listTagFilterPicker = buildTagPicker(document.getElementById('list-tag-filter-container'), {
+    mode: 'filter',
+    getAvailableTags: function () { return cachedListFilterTags; },
+    onChange: function () { document.getElementById('btn-search').click(); }
+  });
+
+  function getSelectedTagIds() {
+    return listTagFilterPicker.getSelected();
+  }
+
+  /**
+   * 列表篩選用的分類下拉——單純平鋪列出(子分類用縮排標示跟哪個頂層同組),
+   * 不像分類管理頁那樣做完整樹狀操作,這裡只需要選一個分類當篩選條件。
+   */
+  function loadCategoryFilterOptions() {
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        var select = document.getElementById('list-category-filter');
+        var currentValue = select.value;
+        var topLevel = categories.filter(function (c) { return !c.parent_id; });
+        var children = categories.filter(function (c) { return c.parent_id; });
+
+        select.innerHTML = '<option value="">全部分類</option>';
+        topLevel.forEach(function (top) {
+          var topOpt = document.createElement('option');
+          topOpt.value = top.id;
+          topOpt.textContent = top.name;
+          select.appendChild(topOpt);
+
+          children
+            .filter(function (c) { return c.parent_id === top.id; })
+            .forEach(function (child) {
+              var childOpt = document.createElement('option');
+              childOpt.value = child.id;
+              childOpt.textContent = '\u3000\u2514 ' + child.name;
+              select.appendChild(childOpt);
+            });
+        });
+        select.value = currentValue;
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  // 瀏覽模式(非搜尋)的分頁——之後要調整每頁筆數,直接改這個常數。
+  var ARTICLE_LIST_PAGE_SIZE = 20;
+  var currentListPage = 0; // 0-indexed
+
+  /**
+   * 更新分頁控制的顯示狀態:第一頁停用「上一頁」,這頁筆數不到一整頁時停用
+   * 「下一頁」(listArticles 不回傳總筆數,用「這頁是否被塞滿」近似判斷還有
+   * 沒有下一頁)。
+   */
+  function updateArticleListPager(resultCount) {
+    var pager = document.getElementById('article-list-pager');
+    pager.classList.remove('hidden');
+    document.getElementById('article-list-pager-label').textContent =
+      '第 ' + (currentListPage + 1) + ' 頁';
+    document.getElementById('article-list-pager-prev').disabled = currentListPage === 0;
+    document.getElementById('article-list-pager-next').disabled =
+      resultCount < ARTICLE_LIST_PAGE_SIZE;
+  }
+
+  function hideArticleListPager() {
+    document.getElementById('article-list-pager').classList.add('hidden');
+  }
+
+  function loadArticleList() {
+    setSearchBusy(true);
+    hideAiAnswerPanel();
+    var statusFilter = getSelectedStatusFilter();
+    var categoryFilter = getSelectedCategoryFilter();
+    var tagFilter = getSelectedTagIds();
+    var opts = {
+      limit: ARTICLE_LIST_PAGE_SIZE,
+      offset: currentListPage * ARTICLE_LIST_PAGE_SIZE
+    };
+    if (statusFilter !== 'all') opts.status = statusFilter;
+    if (categoryFilter) opts.categoryId = categoryFilter;
+    if (tagFilter.length > 0) opts.tagIds = tagFilter;
+
+    google.script.run
+      .withSuccessHandler(function (articles) {
+        setSearchBusy(false);
+        renderArticleCards(articles);
+        updateArticleListPager(articles.length);
+      })
+      .withFailureHandler(function (err) {
+        setSearchBusy(false);
+        showError(err.message);
+      })
+      .listArticles(opts);
+  }
+
+  function performSearch(queryText) {
+    setSearchBusy(true);
+    hideArticleListPager();
+    var statusFilter = getSelectedStatusFilter();
+    var categoryFilter = getSelectedCategoryFilter();
+    var tagFilter = getSelectedTagIds();
+    // hybrid_search_articles 只支援「只看已發布」或「全部都看」,沒有「只看草稿」
+    // 也沒有分類篩選——選草稿或有指定分類時,先用 onlyPublished:false 拿到全部,
+    // 再前端篩一次。標籤篩選(tagIds)RPC 本身就支援,直接傳。
+    // maxSemanticDistance 收緊到 0.4(原因見 RagChat.gs 的 askKnowledgeBase
+    // 同一個數字旁的註解——兩邊刻意保持一致,搜尋結果跟 AI 答案的參考來源
+    // 用同一套相關性門檻)。
+    var searchOpts = { onlyPublished: statusFilter === 'published', maxSemanticDistance: 0.4 };
+    if (tagFilter.length > 0) searchOpts.tagIds = tagFilter;
+
+    google.script.run
+      .withSuccessHandler(function (articles) {
+        setSearchBusy(false);
+        var filtered = articles;
+        if (statusFilter === 'draft') {
+          filtered = filtered.filter(function (a) { return a.status === 'draft'; });
+        }
+        if (categoryFilter) {
+          filtered = filtered.filter(function (a) { return a.category_id === categoryFilter; });
+        }
+        renderArticleCards(filtered);
+      })
+      .withFailureHandler(function (err) {
+        setSearchBusy(false);
+        showError(err.message);
+      })
+      .searchArticles(queryText, searchOpts);
+
+    // 跟搜尋結果平行載入,不互相阻塞——搜尋結果列表本身完全不受影響,見
+    // loadAiAnswer 內部對 cachedWritePassword 的判斷。
+    loadAiAnswer(queryText);
+  }
+
+  /**
+   * RAG 問答(ticket rag-qa/04,多輪)——只有目前持有密碼快取的使用者才會
+   * 自動觸發,沒有密碼快取的人完全不會看到任何提示,也絕對不能呼叫
+   * getWritePassword_()(那個函式在沒有快取時會跳出密碼輸入框)。
+   *
+   * 對話歷史存在前端記憶體(比照 cachedWritePassword,重整頁面就清空,不用
+   * 另外做儲存機制),只保留最近 HISTORY_RETAIN_TURNS 輪,且只有「成功產生
+   * 答案」的輪次才計入歷史——查無資料或失敗的輪次不算,避免污染後續 prompt。
+   * 檢索本身不吃歷史(那是 RagChat.gs 的 askKnowledgeBase 內部決定的,前端
+   * 只負責把歷史往後傳)。
+   *
+   * 畫面顯示只留最新一輪(使用者回報疊加顯示會越搜越長,不好用)——但
+   * conversationHistory 仍然完整保留、繼續送給 Gemini,只是不再把過去幾輪
+   * 的問答同時渲染在畫面上。
+   */
+  var HISTORY_RETAIN_TURNS = 5;
+  var conversationHistory = []; // [{ question, answer }, ...]
+
+  function hideAiAnswerPanel() {
+    var panel = document.getElementById('ai-answer-panel');
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    conversationHistory = [];
+  }
+
+  function loadAiAnswer(queryText) {
+    if (!cachedWritePassword) {
+      hideAiAnswerPanel();
+      return;
+    }
+
+    var panel = document.getElementById('ai-answer-panel');
+    panel.classList.remove('hidden');
+
+    // 只呈現最新一輪——之前是疊加顯示每一輪問答,使用者回報每搜尋一次就多
+    //一篇、越疊越長,體驗不好,改成每次都清空面板只留最新的。對話歷史
+    // (conversationHistory)不受影響,還是繼續送給 Gemini,讓多輪之間的
+    // 回答維持連貫,只是畫面上不再疊加顯示過去幾輪。
+    panel.innerHTML = '';
+    var turnEl = document.createElement('div');
+    turnEl.className = 'ai-answer__turn';
+    turnEl.innerHTML = '<p class="empty-state">AI 正在整理答案…</p>';
+    panel.appendChild(turnEl);
+
+    google.script.run
+      .withSuccessHandler(function (result) {
+        renderAiAnswerTurn(turnEl, queryText, result);
+      })
+      .withFailureHandler(function (err) {
+        if (err && /密碼錯誤/.test(err.message)) {
+          // 密碼被使用者手動改過、但瀏覽器還快取著舊密碼的邊緣情況——安靜
+          // 退回只顯示搜尋結果,不彈錯誤 toast、不打斷使用者原本能用的搜尋。
+          cachedWritePassword = null;
+          hideAiAnswerPanel();
+          return;
+        }
+        turnEl.innerHTML = '<p class="empty-state">' + escapeHtml(err.message) + '</p>';
+      })
+      .askKnowledgeBase(queryText, cachedWritePassword, conversationHistory);
+  }
+
+  function renderAiAnswerTurn(turnEl, queryText, result) {
+    turnEl.innerHTML = '';
+
+    var questionEl = document.createElement('div');
+    questionEl.className = 'ai-answer__question';
+    questionEl.textContent = queryText;
+    turnEl.appendChild(questionEl);
+
+    if (result.noRelevantArticles) {
+      var emptyEl = document.createElement('p');
+      emptyEl.className = 'empty-state';
+      emptyEl.textContent = '知識庫沒有相關資料。';
+      turnEl.appendChild(emptyEl);
+      return; // 查無資料的輪次不計入歷史
+    }
+
+    var answerEl = document.createElement('div');
+    answerEl.className = 'ai-answer__text';
+    // 比照文章內容(detail-content)/md 附件預覽的既有做法,用 marked.parse 渲染,
+    // 不額外套 hljs——整個專案目前的慣例是 markdown 渲染出來的內容一律不加語法上色。
+    // marked.parse 的結果先經過 DOMPurify 消毒再指定給 innerHTML,避免內容裡
+    // 夾帶的可執行內容被原樣執行(細節見 README 已知問題修復紀錄)。
+    answerEl.innerHTML = DOMPurify.sanitize(marked.parse(result.answer || ''));
+    turnEl.appendChild(answerEl);
+
+    var sourcesEl = document.createElement('div');
+    sourcesEl.className = 'ai-answer__sources';
+    result.sources.forEach(function (source) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ai-answer__source';
+      btn.textContent = source.title;
+      btn.addEventListener('click', function () {
+        openArticleDetail(source.id);
+      });
+      sourcesEl.appendChild(btn);
+    });
+    turnEl.appendChild(sourcesEl);
+
+    conversationHistory.push({ question: queryText, answer: result.answer });
+    if (conversationHistory.length > HISTORY_RETAIN_TURNS) {
+      conversationHistory = conversationHistory.slice(-HISTORY_RETAIN_TURNS);
+    }
+  }
+
+  document.getElementById('btn-search').addEventListener('click', function () {
+    currentListPage = 0;
+    clearBatchSelection();
+    var query = document.getElementById('search-input').value.trim();
+    if (query) {
+      performSearch(query);
+    } else {
+      loadArticleList();
+    }
+  });
+
+  document.getElementById('search-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      document.getElementById('btn-search').click();
+    }
+  });
+
+  document.getElementById('list-status-filter').addEventListener('change', function () {
+    document.getElementById('btn-search').click();
+  });
+
+  document.getElementById('list-category-filter').addEventListener('change', function () {
+    document.getElementById('btn-search').click();
+  });
+
+  document.getElementById('article-list-pager-prev').addEventListener('click', function () {
+    if (currentListPage === 0) return;
+    currentListPage -= 1;
+    clearBatchSelection();
+    loadArticleList();
+  });
+
+  document.getElementById('article-list-pager-next').addEventListener('click', function () {
+    currentListPage += 1;
+    clearBatchSelection();
+    loadArticleList();
+  });
+
+  /**
+   * 回首頁——重置搜尋狀態、狀態/分類篩選回預設,重新載入列表。
+   * 目前是唯一能從詳情/編輯/分類管理畫面回到文章列表的入口。
+   */
+  function goHome() {
+    document.getElementById('search-input').value = '';
+    var statusSelect = document.getElementById('list-status-filter');
+    if (statusSelect) statusSelect.value = 'published';
+    var categorySelect = document.getElementById('list-category-filter');
+    if (categorySelect) categorySelect.value = '';
+    listTagFilterPicker.setSelected([]);
+    currentListPage = 0;
+    clearBatchSelection();
+    showView('article-list');
+    loadArticleList();
+    loadCategoryFilterOptions();
+  }
+
+  /**
+   * 批次操作(ticket batch-operations/02)——勾選範圍只限當頁,換頁/換篩選/
+   * 關閉勾選模式都會清空目前的勾選集合(見上面幾個呼叫點)。
+   */
+  function clearBatchSelection() {
+    selectedArticleIds = {};
+    updateBatchToolbar();
+  }
+
+  function updateBatchToolbar() {
+    var toolbar = document.getElementById('article-batch-toolbar');
+    var count = Object.keys(selectedArticleIds).length;
+    document.getElementById('batch-toolbar-count').textContent = '已選取 ' + count + ' 篇';
+    toolbar.classList.toggle('hidden', count === 0);
+  }
+
+  function refreshCurrentArticleList() {
+    var query = document.getElementById('search-input').value.trim();
+    if (query) {
+      performSearch(query);
+    } else {
+      loadArticleList();
+    }
+  }
+
+  /**
+   * 三個批次動作(刪除/設分類/加標籤)共用的結果處理——後端統一回傳
+   * { succeeded, failed } 形狀,失敗不代表整批中止,只是那幾筆沒處理成功。
+   */
+  function handleBatchResult(result) {
+    var successCount = result.succeeded.length;
+    var failCount = result.failed.length;
+
+    if (failCount === 0) {
+      showToast('已處理 ' + successCount + ' 篇');
+    } else {
+      var reasons = result.failed
+        .map(function (f) { return f.id + ': ' + f.message; })
+        .join('; ');
+      showError(successCount + ' 篇成功、' + failCount + ' 篇失敗(' + reasons + ')');
+    }
+
+    clearBatchSelection();
+    refreshCurrentArticleList();
+  }
+
+  document.getElementById('btn-select-mode').addEventListener('click', function () {
+    selectMode = !selectMode;
+    document.getElementById('btn-select-mode').textContent = selectMode ? '取消選取' : '選取';
+    clearBatchSelection();
+    renderArticleCards(currentListArticles);
+  });
+
+  document.getElementById('btn-batch-delete').addEventListener('click', function () {
+    var ids = Object.keys(selectedArticleIds);
+    if (ids.length === 0) return;
+
+    var titles = currentListArticles
+      .filter(function (a) { return selectedArticleIds[a.id]; })
+      .map(function (a) { return a.title; });
+    var confirmed = window.confirm(
+      '確定要刪除以下 ' + ids.length + ' 篇文章嗎?\n\n' + titles.join('\n')
+    );
+    if (!confirmed) return;
+
+    runProtected('batchDeleteArticles', [ids], handleBatchResult, function (err) {
+      showError(err.message);
+    });
+  });
+
+  function loadBatchCategoryOptions() {
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        var select = document.getElementById('batch-category-select');
+        var topLevel = categories.filter(function (c) { return !c.parent_id; });
+        var children = categories.filter(function (c) { return c.parent_id; });
+
+        select.innerHTML = '<option value="">未分類</option>';
+        topLevel.forEach(function (top) {
+          var topOpt = document.createElement('option');
+          topOpt.value = top.id;
+          topOpt.textContent = top.name;
+          select.appendChild(topOpt);
+
+          children
+            .filter(function (c) { return c.parent_id === top.id; })
+            .forEach(function (child) {
+              var childOpt = document.createElement('option');
+              childOpt.value = child.id;
+              childOpt.textContent = '\u3000\u2514 ' + child.name;
+              select.appendChild(childOpt);
+            });
+        });
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  document.getElementById('btn-batch-set-category').addEventListener('click', function () {
+    var ids = Object.keys(selectedArticleIds);
+    if (ids.length === 0) return;
+
+    var select = document.getElementById('batch-category-select');
+    var categoryId = select.value || null;
+    var categoryName = select.options[select.selectedIndex].textContent.trim();
+
+    var confirmed = window.confirm(
+      '確定要將 ' + ids.length + ' 篇文章的分類設為「' + categoryName + '」嗎?'
+    );
+    if (!confirmed) return;
+
+    runProtected('batchSetArticlesCategory', [ids, categoryId], handleBatchResult, function (err) {
+      showError(err.message);
+    });
+  });
+
+  var cachedBatchTags = [];
+
+  function loadBatchTagCache() {
+    google.script.run
+      .withSuccessHandler(function (tags) { cachedBatchTags = tags || []; })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listTags();
+  }
+
+  var batchTagPicker = buildTagPicker(document.getElementById('batch-tag-picker-container'), {
+    mode: 'edit',
+    getAvailableTags: function () { return cachedBatchTags; }
+  });
+
+  document.getElementById('btn-batch-add-tags').addEventListener('click', function () {
+    var ids = Object.keys(selectedArticleIds);
+    if (ids.length === 0) return;
+    var tagNames = batchTagPicker.getSelected();
+    if (tagNames.length === 0) {
+      showError('請先輸入至少一個標籤');
+      return;
+    }
+
+    runProtected('batchAddTagsToArticles', [ids, tagNames], function (result) {
+      batchTagPicker.setSelected([]);
+      handleBatchResult(result);
+    }, function (err) {
+      showError(err.message);
+    });
+  });
+
+  /**
+   * 文章詳情 + 附件(ticket 04)
+   */
+  var currentDetailArticleId = null;
+
+  function openArticleDetail(articleId) {
+    currentDetailArticleId = articleId;
+    showView('article-detail');
+    loadArticleDetail(articleId);
+    mountAttachmentPanel(document.getElementById('detail-attachment-panel'), articleId);
+    loadRelatedArticles(articleId);
+  }
+
+  /**
+   * share-link/01——透過分享連結進來的入口,刻意跟 openArticleDetail 各自
+   * 獨立,不共用失敗處理路徑:一般瀏覽失敗時背後還有文章列表可看,toast 蓋
+   * 一下就好;透過分享連結進來失敗時背後什麼都沒有,需要一個真正的專屬畫面
+   * (#view-article-not-found)而不是空白畫面疊 toast。
+   */
+  function openArticleDetailFromShareLink(articleId) {
+    currentDetailArticleId = articleId;
+    showView('article-detail');
+    google.script.run
+      .withSuccessHandler(function (article) {
+        renderArticleDetail(article);
+        mountAttachmentPanel(document.getElementById('detail-attachment-panel'), articleId);
+        loadRelatedArticles(articleId);
+      })
+      .withFailureHandler(function () {
+        showView('article-not-found');
+      })
+      .getArticle(articleId);
+  }
+
+  function loadArticleDetail(articleId) {
+    google.script.run
+      .withSuccessHandler(function (article) {
+        renderArticleDetail(article);
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .getArticle(articleId);
+  }
+
+  function renderArticleDetail(article) {
+    var sealClass = article.status === 'published' ? 'seal--published' : 'seal--draft';
+    var sealLabel = article.status === 'published' ? '已發布' : '草稿';
+
+    var seal = document.getElementById('detail-seal');
+    seal.className = 'seal ' + sealClass;
+    seal.textContent = sealLabel;
+
+    // share-link/02——只在已發布文章顯示分享按鈕:草稿還沒定稿,不主動鼓勵
+    // 分享(技術上分享連結一樣打得開,getArticle 本來就不分草稿/已發布都能
+    // 讀,這裡純粹是不主動提供入口,不是安全性限制)。
+    document.getElementById('btn-share-article').classList.toggle(
+      'hidden', article.status !== 'published'
+    );
+
+    document.getElementById('detail-category').textContent =
+      (article.categories && article.categories.name) || '未分類';
+    document.getElementById('detail-updated').textContent = formatDate(article.updated_at);
+    document.getElementById('detail-title').textContent = article.title;
+
+    document.getElementById('detail-tags').innerHTML = (article.tags || [])
+      .map(function (t) { return '<span class="tag">' + escapeHtml(t.name) + '</span>'; })
+      .join('');
+
+    // marked.parse 的結果先經過 DOMPurify 消毒再指定給 innerHTML,避免文章
+    // 內文裡夾帶的可執行內容被原樣執行(細節見 README 已知問題修復紀錄)。
+    document.getElementById('detail-content').innerHTML = DOMPurify.sanitize(marked.parse(article.content_md || ''));
+  }
+
+  /**
+   * 「你可能也想看」——跟文章本身/附件面板平行載入,不互相阻塞;失敗或沒有
+   * 相關文章時安靜隱藏整個區塊,不擋住文章本身的顯示(草稿文章沒有
+   * embedding 時,getRelatedArticles 會回傳空陣列,走的是同一條路徑)。
+   */
+  function loadRelatedArticles(articleId) {
+    var section = document.getElementById('detail-related-articles');
+    // 先隱藏、清空,避免切換文章時短暫殘留上一篇的相關文章清單。
+    section.classList.add('hidden');
+    document.getElementById('detail-related-articles-list').innerHTML = '';
+
+    google.script.run
+      .withSuccessHandler(function (articles) {
+        renderRelatedArticles(articles);
+      })
+      .withFailureHandler(function () {
+        section.classList.add('hidden');
+      })
+      .getRelatedArticles(articleId);
+  }
+
+  function renderRelatedArticles(articles) {
+    var section = document.getElementById('detail-related-articles');
+    var list = document.getElementById('detail-related-articles-list');
+    list.innerHTML = '';
+
+    if (!articles || articles.length === 0) {
+      section.classList.add('hidden');
+      return;
+    }
+
+    articles.forEach(function (article) {
+      var categoryName = (article.categories && article.categories.name) || '未分類';
+      var card = document.createElement('div');
+      card.className = 'related-article-card';
+      card.innerHTML =
+        '<div class="related-article-card__title">' + escapeHtml(article.title) + '</div>' +
+        '<div class="related-article-card__category">' + escapeHtml(categoryName) + '</div>';
+      card.addEventListener('click', function () {
+        openArticleDetail(article.id);
+      });
+      list.appendChild(card);
+    });
+
+    section.classList.remove('hidden');
+  }
+
+  document.getElementById('btn-share-article').addEventListener('click', function () {
+    if (!currentDetailArticleId) return;
+    var articleId = currentDetailArticleId;
+    google.script.run
+      .withSuccessHandler(function (baseUrl) {
+        var link = baseUrl + '?article=' + articleId;
+        navigator.clipboard.writeText(link).then(function () {
+          showToast('連結已複製');
+        }).catch(function () {
+          showToast('複製失敗,請手動複製:' + link, true);
+        });
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .getWebAppUrl();
+  });
+
+  document.getElementById('btn-edit-article').addEventListener('click', function () {
+    if (currentDetailArticleId) openArticleEditor(currentDetailArticleId);
+  });
+
+  document.getElementById('btn-delete-article').addEventListener('click', function () {
+    if (!currentDetailArticleId) return;
+    // 硬刪除、沒有資源回收筒(對應先前決策),用原生 confirm() 擋一下——
+    // 這是目前唯一「整篇文章 + 全部附件一次消失」的操作,比刪單一附件/分類
+    // 重非常多,值得跟其他刪除按鈕不同、多一道確認。
+    if (!window.confirm('確定要刪除這篇文章嗎?文章內容跟所有附件都會一併刪除,無法復原。')) {
+      return;
+    }
+    var btn = document.getElementById('btn-delete-article');
+    btn.disabled = true;
+    btn.textContent = '刪除中…';
+    runProtected(
+      'deleteArticle',
+      [currentDetailArticleId],
+      function () {
+        btn.disabled = false;
+        btn.textContent = '刪除文章';
+        showToast('已刪除文章');
+        goHome();
+      },
+      function (err) {
+        btn.disabled = false;
+        btn.textContent = '刪除文章';
+        showError(err.message);
+      }
+    );
+  });
+
+  function formatFileSize(bytes) {
+    if (bytes === null || bytes === undefined) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  var PREVIEWABLE_TYPES = ['photo', 'pdf', 'office_doc', 'code', 'md_file'];
+
+  /**
+   * 附件線上預覽(ticket 05)——只在使用者點「預覽」展開時才呼叫
+   * getSignedAttachmentUrl/getTextAttachmentContent,不是列表一渲染就對每筆
+   * 都預先呼叫。展開過一次後用 data-loaded 記住,收合再展開不會重複打 API。
+   */
+  function toggleAttachmentPreview(att, previewBox, btn) {
+    var isHidden = previewBox.classList.contains('hidden');
+    if (!isHidden) {
+      previewBox.classList.add('hidden');
+      btn.textContent = '預覽';
+      return;
+    }
+
+    previewBox.classList.remove('hidden');
+    btn.textContent = '收合';
+
+    if (previewBox.getAttribute('data-loaded') === '1') return;
+
+    previewBox.innerHTML = '<p class="empty-state">載入中…</p>';
+
+    if (att.type === 'photo' || att.type === 'pdf' || att.type === 'office_doc') {
+      loadSignedPreview(att, previewBox);
+    } else if (att.type === 'code' || att.type === 'md_file') {
+      loadTextPreview(att, previewBox);
+    }
+  }
+
+  function loadSignedPreview(att, previewBox) {
+    google.script.run
+      .withSuccessHandler(function (signedUrl) {
+        previewBox.setAttribute('data-loaded', '1');
+
+        if (att.type === 'photo') {
+          // 圖片可能是手機拍的原始尺寸大檔,下載/解碼需要時間——保留現有的
+          // 「載入中」提示,直到圖片真的載完才清空換成圖片本身,失敗則換成
+          // 明確的錯誤文字。不用 loadSignedPreview 一開始就清空 previewBox,
+          // 避免下載期間畫面變成空白(先前的行為)。
+          //
+          // 不設 loading="lazy":這個屬性靠 IntersectionObserver 判斷元素是否
+          // 進入畫面才觸發下載,但只對已經接在 DOM 上的元素有效——這個 <img>
+          // 故意留在 DOM 外面直到 load 事件才插入,等於瀏覽器永遠沒有機會判斷
+          // 「有沒有進入畫面」,實測會直接卡死在「載入中」、load/error 都不會
+          // 觸發(手動驗收時發現的迴歸,查證過 Chromium/Mozilla 對 loading=lazy
+          // 的既有 bug 討論後確認)。這個附件本來就只在使用者點「預覽」後才會
+          // 動態插入,已經是某種形式的延遲載入,拿掉這個屬性不影響這次要解決
+          // 的核心問題(下載期間畫面不要空白)。
+          var img = document.createElement('img');
+          img.alt = att.file_name;
+          img.className = 'attachment-preview__image';
+          img.decoding = 'async';
+          img.addEventListener('load', function () {
+            previewBox.innerHTML = '';
+            previewBox.appendChild(img);
+          });
+          img.addEventListener('error', function () {
+            previewBox.innerHTML = '<p class="empty-state">圖片載入失敗</p>';
+          });
+          img.src = signedUrl;
+          return;
+        }
+
+        previewBox.innerHTML = '';
+
+        if (att.type === 'pdf' || att.type === 'office_doc') {
+          // 不直接把檔案 URL 塞進 iframe:Apps Script Web App 本身就跑在
+          // Google 加的一層 sandbox iframe 裡(userCodeAppPanel),PDF 再嵌一層
+          // iframe 會變成巢狀 sandbox,Chrome 內建的 PDF 檢視外掛會拒絕在這種
+          // 情境下渲染(手動驗收時實測到,Network 面板顯示檔案其實有下載下來、
+          // 但被標記 blocked:other,同時 Console 出現 sandbox 相關警告)。改走
+          // Google Docs Viewer 包一層,用的是它自己的網頁而不是瀏覽器內建的
+          // PDF 外掛,不會撞到同一個限制——office_doc 原本就是這樣做、也證實
+          // 有效,pdf 這次照同一個模式處理。
+          var viewerFrame = document.createElement('iframe');
+          viewerFrame.src = 'https://docs.google.com/viewer?url=' +
+            encodeURIComponent(signedUrl) + '&embedded=true';
+          viewerFrame.className = 'attachment-preview__frame';
+          previewBox.appendChild(viewerFrame);
+        }
+      })
+      .withFailureHandler(function (err) {
+        previewBox.innerHTML = '<p class="empty-state">' + escapeHtml(err.message) + '</p>';
+      })
+      .getSignedAttachmentUrl(att.id);
+  }
+
+  function loadTextPreview(att, previewBox) {
+    google.script.run
+      .withSuccessHandler(function (content) {
+        previewBox.setAttribute('data-loaded', '1');
+        previewBox.innerHTML = '';
+
+        if (att.type === 'md_file') {
+          var mdDiv = document.createElement('div');
+          mdDiv.className = 'detail-content attachment-preview__markdown';
+          // marked.parse 的結果先經過 DOMPurify 消毒再指定給 innerHTML,理由
+          // 同上面文章內文/AI 問答回答兩處(細節見 README 已知問題修復紀錄)。
+          mdDiv.innerHTML = DOMPurify.sanitize(marked.parse(content || ''));
+          previewBox.appendChild(mdDiv);
+        } else {
+          var pre = document.createElement('pre');
+          var code = document.createElement('code');
+          code.textContent = content || '';
+          pre.appendChild(code);
+          previewBox.appendChild(pre);
+          hljs.highlightElement(code);
+        }
+      })
+      .withFailureHandler(function (err) {
+        previewBox.innerHTML = '<p class="empty-state">' + escapeHtml(err.message) + '</p>';
+      })
+      .getTextAttachmentContent(att.id);
+  }
+
+  function readFileAsBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var result = reader.result;
+        resolve(result.slice(result.indexOf(',') + 1));
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /**
+   * 附件清單 + 上傳/加連結區塊——掛進任一個容器元素,詳情頁跟編輯頁(G3)
+   * 都呼叫這個函式,共用同一份邏輯,不各寫一份。容器內的子元素一律用
+   * class + querySelector 定位,不用全域 id,兩個實例同時存在畫面上也不會互相
+   * 干擾(編輯頁的附件區塊 + 之後可能還在詳情頁的那份,id 不會撞名)。
+   *
+   * @return {{ refresh: function }} 呼叫端需要主動重新整理清單時可以呼叫
+   *   panel.refresh(),例如剛把文章存成草稿、第一次讓附件區塊出現的時候。
+   */
+  function mountAttachmentPanel(containerEl, articleId) {
+    containerEl.innerHTML =
+      '<div class="attachment-panel-list"></div>' +
+      '<div class="attachment-upload">' +
+        '<div class="attachment-upload__folder">' +
+          '<input type="text" class="attachment-panel-folder-input" placeholder="資料夾(選填,輸入既有或新名稱)" autocomplete="off">' +
+          '<div class="attachment-panel-folder-suggestions tag-input__suggestions hidden"></div>' +
+        '</div>' +
+        '<div class="attachment-upload__file">' +
+          '<input type="file" class="attachment-panel-file-input">' +
+          '<button type="button" class="btn attachment-panel-upload-btn">上傳檔案</button>' +
+        '</div>' +
+        '<div class="attachment-upload__url">' +
+          '<input type="url" class="attachment-panel-url-input" placeholder="https://…">' +
+          '<input type="text" class="attachment-panel-url-label" placeholder="顯示文字(選填)">' +
+          '<button type="button" class="btn attachment-panel-addurl-btn">加入連結</button>' +
+        '</div>' +
+      '</div>';
+
+    var listEl = containerEl.querySelector('.attachment-panel-list');
+    var fileInput = containerEl.querySelector('.attachment-panel-file-input');
+    var uploadBtn = containerEl.querySelector('.attachment-panel-upload-btn');
+    var urlInput = containerEl.querySelector('.attachment-panel-url-input');
+    var urlLabelInput = containerEl.querySelector('.attachment-panel-url-label');
+    var addUrlBtn = containerEl.querySelector('.attachment-panel-addurl-btn');
+    var folderInput = containerEl.querySelector('.attachment-panel-folder-input');
+    var folderSuggestionsEl = containerEl.querySelector('.attachment-panel-folder-suggestions');
+
+    // attachment-folders/01——單選,不是像標籤那樣的多選 chips,所以不重用
+    // buildTagPicker,而是複製它「打字 + 自動建議」的互動邏輯,規模小很多。
+    var folderCache = [];
+    function loadFolderCache() {
+      google.script.run
+        .withSuccessHandler(function (folders) { folderCache = folders || []; })
+        .withFailureHandler(function (err) { showError(err.message); })
+        .listFolders(articleId);
+    }
+    loadFolderCache();
+
+    function hideFolderSuggestions() {
+      folderSuggestionsEl.classList.add('hidden');
+      folderSuggestionsEl.innerHTML = '';
+    }
+
+    folderInput.addEventListener('input', function (e) {
+      var q = e.target.value.trim().toLowerCase();
+      if (!q) { hideFolderSuggestions(); return; }
+      var matches = folderCache
+        .filter(function (f) { return f.name.toLowerCase().indexOf(q) !== -1; })
+        .slice(0, 8);
+      if (matches.length === 0) { hideFolderSuggestions(); return; }
+
+      folderSuggestionsEl.innerHTML = '';
+      matches.forEach(function (f) {
+        var item = document.createElement('div');
+        item.className = 'tag-input__suggestion';
+        item.textContent = f.name;
+        item.addEventListener('click', function () {
+          folderInput.value = f.name;
+          hideFolderSuggestions();
+        });
+        folderSuggestionsEl.appendChild(item);
+      });
+      folderSuggestionsEl.classList.remove('hidden');
+    });
+
+    /**
+     * 輸入框現在的文字對到既有資料夾就直接回傳它的 id;是全新名稱就先呼叫
+     * createFolder 建立、再回傳新 id;輸入框是空的就回傳 null(不分類)。
+     */
+    function resolveFolderId(onResolved, onError) {
+      var name = folderInput.value.trim();
+      if (!name) { onResolved(null); return; }
+
+      var existing = folderCache.filter(function (f) { return f.name === name; })[0];
+      if (existing) { onResolved(existing.id); return; }
+
+      runProtected('createFolder', [articleId, name], function (folder) {
+        folderCache.push(folder);
+        onResolved(folder.id);
+      }, onError);
+    }
+
+    function buildAttachmentItemEl(att) {
+      var wrapper = document.createElement('div');
+      wrapper.className = 'attachment-item';
+
+      var row = document.createElement('div');
+      row.className = 'attachment-row';
+
+      var typeBadge = document.createElement('span');
+      typeBadge.className = 'attachment-row__type';
+      typeBadge.textContent = att.type;
+      row.appendChild(typeBadge);
+
+      if (att.type === 'url') {
+        var link = document.createElement('a');
+        link.href = att.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.className = 'attachment-row__label';
+        link.textContent = att.file_name || att.url;
+        row.appendChild(link);
+      } else {
+        var label = document.createElement('span');
+        label.className = 'attachment-row__label';
+        label.textContent = att.file_name;
+        row.appendChild(label);
+
+        if (att.file_size !== undefined) {
+          var size = document.createElement('span');
+          size.className = 'attachment-row__size';
+          size.textContent = formatFileSize(att.file_size);
+          row.appendChild(size);
+        }
+      }
+
+      var previewBox = document.createElement('div');
+      previewBox.className = 'attachment-preview hidden';
+
+      if (PREVIEWABLE_TYPES.indexOf(att.type) !== -1) {
+        var previewBtn = document.createElement('button');
+        previewBtn.className = 'btn attachment-row__preview';
+        previewBtn.textContent = '預覽';
+        previewBtn.addEventListener('click', function () {
+          toggleAttachmentPreview(att, previewBox, previewBtn);
+        });
+        row.appendChild(previewBtn);
+      }
+
+      var removeBtn = document.createElement('button');
+      removeBtn.className = 'btn attachment-row__remove';
+      removeBtn.textContent = '刪除';
+      removeBtn.addEventListener('click', function () {
+        runProtected(
+          'deleteAttachment',
+          [att.id],
+          function () { refresh(); },
+          function (err) { showError(err.message); }
+        );
+      });
+      row.appendChild(removeBtn);
+
+      wrapper.appendChild(row);
+      wrapper.appendChild(previewBox);
+      return wrapper;
+    }
+
+    /**
+     * attachment-folders/02——沒有 folder_id 的附件歸到「未分類」這個虛擬
+     * 分組(不對應任何一筆真實的 attachment_folders 列),固定排最後;其餘
+     * 分組維持 listAttachments 回傳的 created_at.asc 順序(Array.sort 是
+     * stable sort,只把「未分類」挪到最後,不打亂其餘分組彼此的相對順序)。
+     */
+    function groupByFolder(attachments) {
+      var groups = {};
+      var order = [];
+
+      attachments.forEach(function (att) {
+        var key = att.attachment_folders ? att.attachment_folders.id : 'unfiled';
+        if (!groups[key]) {
+          groups[key] = {
+            id: key, // 'unfiled' 是虛擬分組的 sentinel,不對應真實的 attachment_folders 列
+            name: att.attachment_folders ? att.attachment_folders.name : '未分類',
+            items: []
+          };
+          order.push(key);
+        }
+        groups[key].items.push(att);
+      });
+
+      order.sort(function (a, b) {
+        if (a === 'unfiled') return 1;
+        if (b === 'unfiled') return -1;
+        return 0;
+      });
+
+      return order.map(function (key) { return groups[key]; });
+    }
+
+    function renderList(attachments) {
+      listEl.innerHTML = '';
+
+      if (!attachments || attachments.length === 0) {
+        listEl.innerHTML = '<p class="empty-state">還沒有附件。</p>';
+        return;
+      }
+
+      groupByFolder(attachments).forEach(function (group) {
+        var details = document.createElement('details');
+        details.className = 'attachment-folder-group';
+        details.open = true; // 預設展開,使用者可以自己收合
+
+        var summary = document.createElement('summary');
+        summary.className = 'attachment-folder-group__title';
+
+        var titleText = document.createElement('span');
+        titleText.textContent = group.name + '(' + group.items.length + ')';
+        summary.appendChild(titleText);
+
+        // 「未分類」是虛擬分組,不對應真實的 attachment_folders 列,不顯示
+        // 改名/刪除選單。
+        if (group.id !== 'unfiled') {
+          var actions = document.createElement('span');
+          actions.className = 'attachment-folder-group__actions';
+
+          var renameBtn = document.createElement('button');
+          renameBtn.type = 'button';
+          renameBtn.className = 'btn attachment-folder-group__action';
+          renameBtn.textContent = '改名';
+          renameBtn.addEventListener('click', function (e) {
+            // 按鈕包在 <summary> 裡,click 事件預設會冒泡觸發原生的展開/收合
+            // ——preventDefault + stopPropagation 才不會點「改名」的同時把
+            // 區塊收合起來。
+            e.preventDefault();
+            e.stopPropagation();
+            var newName = window.prompt('資料夾新名稱', group.name);
+            if (!newName) return;
+            newName = newName.trim();
+            if (!newName || newName === group.name) return;
+
+            runProtected('renameFolder', [group.id, newName], function () {
+              showToast('已更新');
+              loadFolderCache();
+              refresh();
+            }, function (err) { showError(err.message); });
+          });
+          actions.appendChild(renameBtn);
+
+          var deleteFolderBtn = document.createElement('button');
+          deleteFolderBtn.type = 'button';
+          deleteFolderBtn.className = 'btn attachment-folder-group__action attachment-folder-group__action--danger';
+          deleteFolderBtn.textContent = '刪除資料夾';
+          deleteFolderBtn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var message = group.items.length > 0
+              ? ('這個資料夾裡有 ' + group.items.length + ' 個附件,刪除資料夾後它們會變回未分類,附件本身不會被刪除,確定嗎?')
+              : '確定要刪除這個資料夾嗎?';
+            if (!window.confirm(message)) return;
+
+            runProtected('deleteFolder', [group.id], function () {
+              showToast('已刪除');
+              loadFolderCache();
+              refresh();
+            }, function (err) { showError(err.message); });
+          });
+          actions.appendChild(deleteFolderBtn);
+
+          summary.appendChild(actions);
+        }
+
+        details.appendChild(summary);
+
+        var groupList = document.createElement('div');
+        groupList.className = 'attachment-folder-group__list';
+        group.items.forEach(function (att) {
+          groupList.appendChild(buildAttachmentItemEl(att));
+        });
+        details.appendChild(groupList);
+
+        listEl.appendChild(details);
+      });
+    }
+
+    function refresh() {
+      listEl.innerHTML = '<p class="empty-state">載入中…</p>';
+      google.script.run
+        .withSuccessHandler(renderList)
+        .withFailureHandler(function (err) { showError(err.message); })
+        .listAttachments(articleId);
+    }
+
+    uploadBtn.addEventListener('click', function () {
+      var file = fileInput.files[0];
+      if (!file) {
+        showError('請先選擇檔案');
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = '上傳中…';
+
+      resolveFolderId(function (folderId) {
+        readFileAsBase64(file)
+          .then(function (base64Data) {
+            runProtected(
+              'uploadAttachmentFile',
+              [articleId, file.name, base64Data, file.type || 'application/octet-stream', folderId],
+              function () {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = '上傳檔案';
+                fileInput.value = '';
+                folderInput.value = '';
+                refresh();
+                showToast('已上傳');
+              },
+              function (err) {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = '上傳檔案';
+                showError(err.message);
+              }
+            );
+          })
+          .catch(function () {
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = '上傳檔案';
+            showError('讀取檔案失敗');
+          });
+      }, function (err) {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = '上傳檔案';
+        showError(err.message);
+      });
+    });
+
+    /**
+     * 附件的自訂網址只接受一般網頁連結,理由跟後端 addAttachmentUrl_ 的
+     * 驗證一致——這裡是提早擋、伺服器端驗證才是真正的防線(細節見 README
+     * 已知問題修復紀錄)。
+     */
+    function isSafeAttachmentUrl_(url) {
+      return /^https?:\/\//i.test(url);
+    }
+
+    addUrlBtn.addEventListener('click', function () {
+      var url = urlInput.value.trim();
+      if (!url) {
+        showError('請輸入連結網址');
+        return;
+      }
+      if (!isSafeAttachmentUrl_(url)) {
+        showError('附件網址只接受 http/https 開頭的一般網頁連結');
+        return;
+      }
+
+      addUrlBtn.disabled = true;
+      addUrlBtn.textContent = '新增中…';
+
+      resolveFolderId(function (folderId) {
+        runProtected(
+          'addAttachmentUrl',
+          [articleId, url, urlLabelInput.value.trim(), folderId],
+          function () {
+            addUrlBtn.disabled = false;
+            addUrlBtn.textContent = '加入連結';
+            urlInput.value = '';
+            urlLabelInput.value = '';
+            folderInput.value = '';
+            refresh();
+            showToast('已新增連結');
+          },
+          function (err) {
+            addUrlBtn.disabled = false;
+            addUrlBtn.textContent = '加入連結';
+            showError(err.message);
+          }
+        );
+      }, function (err) {
+        addUrlBtn.disabled = false;
+        addUrlBtn.textContent = '加入連結';
+        showError(err.message);
+      });
+    });
+
+    refresh();
+    return { refresh: refresh };
+  }
+
+  /**
+   * 文章編輯(ticket 03)
+   */
+  var easyMDEInstance = null;
+  var editingArticleId = null;
+  var cachedCategories = [];
+  var cachedTags = [];
+
+  function initEasyMDE() {
+    if (easyMDEInstance) return;
+    easyMDEInstance = new EasyMDE({
+      element: document.getElementById('editor-content'),
+      spellChecker: false,
+      status: false,
+      placeholder: '用 Markdown 寫下內容…'
+    });
+  }
+
+  function renderCategoryOptions() {
+    var select = document.getElementById('editor-category');
+    var currentValue = select.value;
+    var topLevel = cachedCategories.filter(function (c) { return !c.parent_id; });
+    var children = cachedCategories.filter(function (c) { return c.parent_id; });
+
+    select.innerHTML = '<option value="">未分類</option>';
+    topLevel.forEach(function (top) {
+      var topOpt = document.createElement('option');
+      topOpt.value = top.id;
+      topOpt.textContent = top.name;
+      select.appendChild(topOpt);
+
+      children
+        .filter(function (c) { return c.parent_id === top.id; })
+        .forEach(function (child) {
+          var childOpt = document.createElement('option');
+          childOpt.value = child.id;
+          childOpt.textContent = '\u3000\u2514 ' + child.name; // 全形空白 + 樹狀符號,標示為子分類
+          select.appendChild(childOpt);
+        });
+    });
+    select.value = currentValue;
+  }
+
+  function loadCategoryOptions() {
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        cachedCategories = categories || [];
+        renderCategoryOptions();
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  function loadTagCache() {
+    google.script.run
+      .withSuccessHandler(function (tags) { cachedTags = tags || []; })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listTags();
+  }
+
+  function enterEditor() {
+    loadCategoryOptions();
+    loadTagCache();
+  }
+
+  /**
+   * 共用標籤選取元件(tag-picker/01)。掛載到 `container` 底下,回傳一個
+   * `{ setSelected, getSelected }` 控制介面給呼叫端讀寫選取狀態。
+   *
+   * options.mode:
+   *   'edit'   — 保留既有「打字 + 自動建議 + Enter 新增」(含建立新標籤),
+   *              外加展開瀏覽全部標籤的 checkbox 清單。setSelected/getSelected
+   *              吃/回傳標籤「名稱」陣列(對齊 tag_names 存檔語意——新建立的
+   *              標籤在存檔前本來就沒有 id)。
+   *   'filter' — 不渲染文字輸入框,只有展開瀏覽清單,不能建立新標籤。
+   *              setSelected/getSelected 吃/回傳標籤「id」陣列(篩選只會用到
+   *              已存在的標籤,呼叫端——例如 listArticles/searchArticles——
+   *              要的是 id,不是名稱)。
+   *
+   * 內部一律用 { id, name } 物件陣列追蹤選取狀態,靠 name 判斷去重(跟原本
+   * editorTags 的 indexOf(name) 去重邏輯一致);對外的 setSelected/getSelected
+   * 才依 mode 轉換成呼叫端期待的形狀。
+   *
+   * options.getAvailableTags 是一個函式(不是陣列)——呼叫端的標籤快取
+   * (例如 cachedTags)是之後才非同步載入、之後還會被整個重新指定,元件必須
+   * 每次渲染建議/瀏覽清單時都重新呼叫這個函式拿最新值,不能在建構當下就把
+   * 陣列存死。
+   */
+  function buildTagPicker(container, options) {
+    options = options || {};
+    var mode = options.mode || 'edit';
+    var getAvailableTags = options.getAvailableTags || function () { return []; };
+    var onChange = options.onChange || function () {};
+    var selected = []; // [{ id, name }]
+
+    container.innerHTML = '';
+    var root = document.createElement('div');
+    root.className = 'tag-input';
+
+    var chipsEl = document.createElement('div');
+    chipsEl.className = 'tag-input__chips';
+    root.appendChild(chipsEl);
+
+    var inputEl = null;
+    var suggestionsEl = null;
+    if (mode === 'edit') {
+      inputEl = document.createElement('input');
+      inputEl.type = 'text';
+      inputEl.className = 'tag-input__field';
+      inputEl.placeholder = '輸入標籤名稱,Enter 新增…';
+      inputEl.autocomplete = 'off';
+      root.appendChild(inputEl);
+
+      suggestionsEl = document.createElement('div');
+      suggestionsEl.className = 'tag-input__suggestions hidden';
+      root.appendChild(suggestionsEl);
+    }
+
+    var browseToggle = document.createElement('button');
+    browseToggle.type = 'button';
+    browseToggle.className = 'tag-input__browse-toggle';
+    browseToggle.textContent = '瀏覽全部標籤 \u25be';
+    root.appendChild(browseToggle);
+
+    var browseListEl = document.createElement('div');
+    browseListEl.className = 'tag-input__browse-list hidden';
+    root.appendChild(browseListEl);
+
+    container.appendChild(root);
+
+    function isSelected(name) {
+      return selected.some(function (t) { return t.name === name; });
+    }
+
+    function emitChange() {
+      if (mode === 'filter') {
+        onChange(selected.map(function (t) { return t.id; }));
+      } else {
+        onChange(selected.map(function (t) { return t.name; }));
+      }
+    }
+
+    function renderChips() {
+      chipsEl.innerHTML = '';
+      selected.forEach(function (t) {
+        var chip = document.createElement('span');
+        chip.className = 'tag tag--removable';
+        chip.textContent = t.name;
+
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'tag__remove';
+        remove.textContent = '\u00d7';
+        remove.setAttribute('aria-label', '移除標籤 ' + t.name);
+        remove.addEventListener('click', function () { removeTag(t.name); });
+
+        chip.appendChild(remove);
+        chipsEl.appendChild(chip);
+      });
+    }
+
+    function renderBrowseList() {
+      browseListEl.innerHTML = '';
+      getAvailableTags().forEach(function (t) {
+        var row = document.createElement('label');
+        var picked = isSelected(t.name);
+        row.className = 'tag-input__browse-item' + (picked ? ' tag-input__browse-item--selected' : '');
+
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = picked;
+        checkbox.addEventListener('change', function () {
+          if (checkbox.checked) {
+            addTag(t.id, t.name);
+          } else {
+            removeTag(t.name);
+          }
+        });
+
+        row.appendChild(checkbox);
+        row.appendChild(document.createTextNode(t.name));
+        browseListEl.appendChild(row);
+      });
+    }
+
+    function renderAll() {
+      renderChips();
+      if (!browseListEl.classList.contains('hidden')) renderBrowseList();
+    }
+
+    function addTag(id, name) {
+      name = (name || '').trim();
+      if (!name || isSelected(name)) return;
+      selected.push({ id: id || null, name: name });
+      renderAll();
+      emitChange();
+    }
+
+    function removeTag(name) {
+      selected = selected.filter(function (t) { return t.name !== name; });
+      renderAll();
+      emitChange();
+    }
+
+    browseToggle.addEventListener('click', function () {
+      browseListEl.classList.toggle('hidden');
+      if (!browseListEl.classList.contains('hidden')) renderBrowseList();
+    });
+
+    if (mode === 'edit') {
+      function hideSuggestions() {
+        suggestionsEl.classList.add('hidden');
+        suggestionsEl.innerHTML = '';
+      }
+
+      function renderSuggestions(query) {
+        var q = query.toLowerCase();
+        if (!q) { hideSuggestions(); return; }
+
+        var matches = getAvailableTags()
+          .filter(function (t) {
+            return t.name.toLowerCase().indexOf(q) !== -1 && !isSelected(t.name);
+          })
+          .slice(0, 8);
+
+        if (matches.length === 0) { hideSuggestions(); return; }
+
+        suggestionsEl.innerHTML = '';
+        matches.forEach(function (t) {
+          var item = document.createElement('div');
+          item.className = 'tag-input__suggestion';
+          item.textContent = t.name;
+          item.addEventListener('click', function () {
+            addTag(t.id, t.name);
+            inputEl.value = '';
+            hideSuggestions();
+          });
+          suggestionsEl.appendChild(item);
+        });
+        suggestionsEl.classList.remove('hidden');
+      }
+
+      inputEl.addEventListener('input', function (e) { renderSuggestions(e.target.value); });
+      inputEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ',') {
+          e.preventDefault();
+          var existing = getAvailableTags().filter(function (t) { return t.name === e.target.value.trim(); })[0];
+          addTag(existing ? existing.id : null, e.target.value);
+          inputEl.value = '';
+          hideSuggestions();
+        }
+      });
+    }
+
+    return {
+      setSelected: function (values) {
+        var available = getAvailableTags();
+        if (mode === 'filter') {
+          selected = (values || []).map(function (id) {
+            var found = available.filter(function (t) { return t.id === id; })[0];
+            return found || { id: id, name: id };
+          });
+        } else {
+          selected = (values || []).map(function (name) {
+            var found = available.filter(function (t) { return t.name === name; })[0];
+            return found || { id: null, name: name };
+          });
+        }
+        renderAll();
+      },
+      getSelected: function () {
+        if (mode === 'filter') return selected.map(function (t) { return t.id; });
+        return selected.map(function (t) { return t.name; });
+      }
+    };
+  }
+
+  var editorTagPicker = buildTagPicker(document.getElementById('editor-tag-picker-container'), {
+    mode: 'edit',
+    getAvailableTags: function () { return cachedTags; }
+  });
+
+  /**
+   * 存草稿/發布成功後,或打開既有文章編輯時,顯示並掛上附件區塊(G3),
+   * 同時更新標題旁的印章徽記——跟列表/詳情頁同一套視覺,讓「現在到底是
+   * 草稿還是已發布」不用回想剛剛的 toast 說了什麼,一眼就看得到。
+   */
+  function showEditorAttachmentSection(articleId, status) {
+    document.getElementById('editor-attachment-section').classList.remove('hidden');
+    mountAttachmentPanel(document.getElementById('editor-attachment-panel'), articleId);
+    updateEditorSeal(status);
+    updateEditorAttachmentHint(status);
+    updateSaveDraftButtonLabel(status);
+    updatePublishButtonVisibility(status);
+  }
+
+  /**
+   * 文章已經發布後,「發布」這顆按鈕就沒有事可做了——內容變更已經交給
+   * 「儲存變更」處理(它自己就會在文章已發布時觸發 embedding 重新產生,
+   * 見 spec_gas_backend.md 的觸發規則),再按一次「發布」不會改變任何資料,
+   * 只會白白多打一次 Gemini API。與其用文字提醒「不要按」,不如直接把按鈕
+   * 藏起來,沒有這個選項自然就不會誤按。
+   */
+  function updatePublishButtonVisibility(status) {
+    document.getElementById('btn-publish').classList.toggle('hidden', status === 'published');
+  }
+
+  /**
+   * 「存草稿」這個按鈕的文字本身也要跟著狀態換——文章已經發布之後,按這顆
+   * 按鈕並不會把它打回草稿(saveDraft() 只更新內容,不動 status),但如果
+   * 文字還是寫「存草稿」,會讓人誤以為按下去會讓已發布的文章變回草稿。
+   * 已發布時改叫「儲存變更」,行為完全一樣,只是文字更準確。
+   */
+  var currentEditorArticleStatus = null;
+  function updateSaveDraftButtonLabel(status) {
+    currentEditorArticleStatus = status;
+    document.getElementById('btn-save-draft').textContent =
+      status === 'published' ? '儲存變更' : '存草稿';
+  }
+
+  function updateEditorAttachmentHint(status) {
+    var hint = document.getElementById('editor-attachment-hint');
+    if (status === 'published') {
+      hint.textContent =
+        '附件會直接儲存;如果你之後又修改了標題或內容,按上方的「儲存變更」' +
+        '就能存回去。';
+    } else {
+      hint.textContent =
+        '附件會直接儲存,不需要另外按其他按鈕;這篇文章目前還是草稿,' +
+        '準備好之後按上方的「發布」就能公開。';
+    }
+  }
+
+  function updateEditorSeal(status) {
+    var seal = document.getElementById('editor-seal');
+    if (!status) {
+      seal.classList.add('hidden');
+      return;
+    }
+    var sealClass = status === 'published' ? 'seal--published' : 'seal--draft';
+    var sealLabel = status === 'published' ? '已發布' : '草稿';
+    seal.className = 'seal ' + sealClass;
+    seal.textContent = sealLabel;
+  }
+
+  function resetEditorForm() {
+    editingArticleId = null;
+    document.getElementById('editor-heading').textContent = '新增文章';
+    document.getElementById('editor-title').value = '';
+    if (easyMDEInstance) easyMDEInstance.value('');
+    document.getElementById('editor-category').value = '';
+    editorTagPicker.setSelected([]);
+    // 新文章還沒有 id,附件區塊先隱藏、清空(避免殘留上一篇文章的附件清單),
+    // 徽記也一併藏起來(新文章還沒有狀態可以顯示)。
+    document.getElementById('editor-attachment-section').classList.add('hidden');
+    document.getElementById('editor-attachment-panel').innerHTML = '';
+    updateEditorSeal(null);
+    updateSaveDraftButtonLabel(null);
+    updatePublishButtonVisibility(null);
+  }
+
+  function openArticleEditor(articleId) {
+    showView('article-editor');
+    document.getElementById('editor-heading').textContent = '編輯文章';
+    enterEditor();
+
+    google.script.run
+      .withSuccessHandler(function (article) {
+        editingArticleId = article.id;
+        document.getElementById('editor-title').value = article.title || '';
+        if (easyMDEInstance) easyMDEInstance.value(article.content_md || '');
+        document.getElementById('editor-category').value = article.category_id || '';
+        editorTagPicker.setSelected((article.tags || []).map(function (t) { return t.name; }));
+        showEditorAttachmentSection(article.id, article.status);
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .getArticle(articleId);
+  }
+
+  function readEditorForm() {
+    return {
+      title: document.getElementById('editor-title').value.trim(),
+      content_md: (easyMDEInstance ? easyMDEInstance.value() : '').trim(),
+      category_id: document.getElementById('editor-category').value || null,
+      tag_names: editorTagPicker.getSelected()
+    };
+  }
+
+  function validateEditorForm(data) {
+    if (!data.title || !data.content_md) {
+      showError('請填寫標題與內容');
+      return false;
+    }
+    return true;
+  }
+
+  function setEditorBusy(isBusy) {
+    document.getElementById('btn-save-draft').disabled = isBusy;
+    document.getElementById('btn-publish').disabled = isBusy;
+  }
+
+  function saveDraft() {
+    var data = readEditorForm();
+    if (!validateEditorForm(data)) return;
+
+    setEditorBusy(true);
+    var btn = document.getElementById('btn-save-draft');
+    btn.textContent = '儲存中…';
+
+    function done(article) {
+      setEditorBusy(false);
+      editingArticleId = article.id;
+      document.getElementById('editor-heading').textContent = '編輯文章';
+      // 這裡面會順便把按鈕文字換回「存草稿」或「儲存變更」(依 article.status),
+      // 不用在這裡另外處理。
+      showEditorAttachmentSection(article.id, article.status);
+      showToast('已儲存');
+    }
+    function fail(err) {
+      setEditorBusy(false);
+      // 這次失敗、狀態沒變,恢復成呼叫前原本顯示的文字(草稿 or 已發布時的
+      // 「儲存變更」),不要一律蓋回「存草稿」——不然已發布文章存檔失敗時
+      // 按鈕文字會變得不準確。
+      updateSaveDraftButtonLabel(currentEditorArticleStatus);
+      showError(err.message);
+    }
+
+    if (editingArticleId) {
+      runProtected('updateArticle', [editingArticleId, data], done, fail);
+    } else {
+      runProtected('createArticle', [data], done, fail);
+    }
+  }
+
+  function publishArticle() {
+    var data = readEditorForm();
+    if (!validateEditorForm(data)) return;
+
+    setEditorBusy(true);
+    var btn = document.getElementById('btn-publish');
+    btn.textContent = '發布中…';
+
+    function done() {
+      setEditorBusy(false);
+      btn.textContent = '發布';
+      document.getElementById('editor-heading').textContent = '編輯文章';
+      // 這裡一定是 'published'——能走到這個 done() 代表 setArticleStatus
+      // 剛剛才成功回來,不用另外查一次文章目前的狀態。
+      showEditorAttachmentSection(editingArticleId, 'published');
+      showToast('已發布');
+    }
+    function fail(err) {
+      setEditorBusy(false);
+      btn.textContent = '發布';
+      showError(err.message);
+    }
+
+    if (editingArticleId) {
+      // 先把表單上最新的內容存進去,再切換發布狀態——不然 setArticleStatus
+      // 不會動到 title/content_md/category_id/tags,發布出去的還是資料庫裡
+      // 上一次存檔時的舊資料。密碼只會在第一次 runProtected 跳出輸入框,
+      // 第二次呼叫會直接用快取的密碼,不會連續跳兩次。
+      runProtected(
+        'updateArticle',
+        [editingArticleId, data],
+        function () {
+          runProtected('setArticleStatus', [editingArticleId, 'published'], done, fail);
+        },
+        fail
+      );
+    } else {
+      runProtected(
+        'createArticle',
+        [data],
+        function (created) {
+          editingArticleId = created.id;
+          runProtected('setArticleStatus', [created.id, 'published'], done, fail);
+        },
+        fail
+      );
+    }
+  }
+
+  document.getElementById('btn-save-draft').addEventListener('click', saveDraft);
+  document.getElementById('btn-publish').addEventListener('click', publishArticle);
+  document.getElementById('btn-editor-done').addEventListener('click', goHome);
+
+  /**
+   * 分類管理(ticket 06)
+   */
+  var cachedCategoriesForManager = [];
+
+  function loadCategoryTree() {
+    var container = document.getElementById('category-tree');
+    container.innerHTML = '<p class="empty-state">載入中…</p>';
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        cachedCategoriesForManager = categories || [];
+        renderCategoryTree();
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  function renderCategoryTree() {
+    var container = document.getElementById('category-tree');
+    container.innerHTML = '';
+
+    var topLevel = cachedCategoriesForManager.filter(function (c) { return !c.parent_id; });
+
+    if (topLevel.length === 0) {
+      container.innerHTML = '<p class="empty-state">還沒有分類。</p>';
+      return;
+    }
+
+    topLevel.forEach(function (top) {
+      container.appendChild(buildCategoryNode(top, true));
+    });
+  }
+
+  function buildCategoryNode(category, isTopLevel) {
+    var node = document.createElement('div');
+    node.className = 'category-node' + (isTopLevel ? '' : ' category-node--child');
+
+    var row = document.createElement('div');
+    row.className = 'category-node__row';
+    node.appendChild(row);
+
+    function renderViewRow() {
+      row.innerHTML = '';
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'category-node__name';
+      nameSpan.textContent = category.name;
+      row.appendChild(nameSpan);
+
+      var renameBtn = document.createElement('button');
+      renameBtn.className = 'btn category-node__action';
+      renameBtn.textContent = '改名';
+      renameBtn.addEventListener('click', renderEditRow);
+      row.appendChild(renameBtn);
+
+      var moveBtn = document.createElement('button');
+      moveBtn.className = 'btn category-node__action';
+      moveBtn.textContent = '移動';
+      moveBtn.addEventListener('click', renderMoveRow);
+      row.appendChild(moveBtn);
+
+      // 子分類不顯示「新增子分類」,介面上就不讓使用者嘗試建第 3 層,
+      // 不用等後端的 2 層限制報錯才知道不行。
+      if (isTopLevel) {
+        var addChildBtn = document.createElement('button');
+        addChildBtn.className = 'btn category-node__action';
+        addChildBtn.textContent = '新增子分類';
+        addChildBtn.addEventListener('click', function () {
+          toggleAddChildForm(node, category);
+        });
+        row.appendChild(addChildBtn);
+      }
+
+      var deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn category-node__action category-node__delete';
+      deleteBtn.textContent = '刪除';
+      deleteBtn.addEventListener('click', function () {
+        deleteCategoryNode(category.id);
+      });
+      row.appendChild(deleteBtn);
+    }
+
+    function renderEditRow() {
+      row.innerHTML = '';
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'category-node__rename-input';
+      input.value = category.name;
+      row.appendChild(input);
+
+      var saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-primary category-node__action';
+      saveBtn.textContent = '儲存';
+      row.appendChild(saveBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn category-node__action';
+      cancelBtn.textContent = '取消';
+      cancelBtn.addEventListener('click', renderViewRow);
+      row.appendChild(cancelBtn);
+
+      saveBtn.addEventListener('click', function () {
+        var newName = input.value.trim();
+        if (!newName) { showError('分類名稱不能是空的'); return; }
+
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        saveBtn.textContent = '儲存中…';
+
+        runProtected(
+          'updateCategory',
+          [category.id, newName],
+          function (updated) {
+            category.name = updated.name;
+            renderViewRow();
+            showToast('已更新');
+          },
+          function (err) {
+            saveBtn.disabled = false;
+            cancelBtn.disabled = false;
+            saveBtn.textContent = '儲存';
+            showError(err.message);
+          }
+        );
+      });
+
+      input.focus();
+    }
+
+    function renderMoveRow() {
+      row.innerHTML = '';
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'category-node__name';
+      nameSpan.textContent = category.name;
+      row.appendChild(nameSpan);
+
+      var hasChildren = cachedCategoriesForManager.some(function (c) {
+        return c.parent_id === category.id;
+      });
+
+      var select = document.createElement('select');
+      select.className = 'category-node__move-select';
+
+      var topOption = document.createElement('option');
+      topOption.value = '';
+      topOption.textContent = '設為頂層分類';
+      select.appendChild(topOption);
+
+      // 這個分類本身有子分類時,移到別的分類底下一定會讓它的子分類變成
+      // 第 3 層——介面上直接不提供這些選項,不用等使用者選了才被後端拒絕。
+      // 後端仍然會做同樣的驗證,這裡只是提早擋掉常見的誤觸。
+      if (!hasChildren) {
+        cachedCategoriesForManager
+          .filter(function (c) { return !c.parent_id && c.id !== category.id; })
+          .forEach(function (c) {
+            var opt = document.createElement('option');
+            opt.value = c.id;
+            opt.textContent = c.name;
+            select.appendChild(opt);
+          });
+      }
+      row.appendChild(select);
+
+      var confirmBtn = document.createElement('button');
+      confirmBtn.className = 'btn btn-primary category-node__action';
+      confirmBtn.textContent = '確定';
+      row.appendChild(confirmBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn category-node__action';
+      cancelBtn.textContent = '取消';
+      cancelBtn.addEventListener('click', renderViewRow);
+      row.appendChild(cancelBtn);
+
+      confirmBtn.addEventListener('click', function () {
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        confirmBtn.textContent = '移動中…';
+
+        runProtected(
+          'moveCategory',
+          [category.id, select.value || null],
+          function () {
+            showToast('已移動');
+            // 父子關係整個變了,重抓整棵樹比在前端手動搬運 DOM 節點簡單可靠。
+            loadCategoryTree();
+          },
+          function (err) {
+            confirmBtn.disabled = false;
+            cancelBtn.disabled = false;
+            confirmBtn.textContent = '確定';
+            showError(err.message);
+          }
+        );
+      });
+    }
+
+    renderViewRow();
+
+    if (isTopLevel) {
+      var childrenContainer = document.createElement('div');
+      childrenContainer.className = 'category-node__children';
+      cachedCategoriesForManager
+        .filter(function (c) { return c.parent_id === category.id; })
+        .forEach(function (child) {
+          childrenContainer.appendChild(buildCategoryNode(child, false));
+        });
+      node.appendChild(childrenContainer);
+    }
+
+    return node;
+  }
+
+  function toggleAddChildForm(node, parentCategory) {
+    var existing = node.querySelector('.category-node__add-child-form');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    var form = document.createElement('div');
+    form.className = 'category-node__add-child-form';
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = '子分類名稱';
+    form.appendChild(input);
+
+    var confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn btn-primary category-node__action';
+    confirmBtn.textContent = '新增';
+    confirmBtn.addEventListener('click', function () {
+      var name = input.value.trim();
+      if (!name) { showError('請輸入子分類名稱'); return; }
+
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = '新增中…';
+
+      runProtected(
+        'createCategory',
+        [name, parentCategory.id],
+        function () {
+          loadCategoryTree();
+          showToast('已新增子分類');
+        },
+        function (err) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = '新增';
+          // 對子分類再建子分類的後端錯誤(「分類最多只能有 2 層」)也是走這裡顯示,
+          // 即使介面已經不讓使用者從正常路徑觸發這個情境。
+          showError(err.message);
+        }
+      );
+    });
+    form.appendChild(confirmBtn);
+
+    var row = node.querySelector('.category-node__row');
+    row.insertAdjacentElement('afterend', form);
+    input.focus();
+  }
+
+  function deleteCategoryNode(categoryId) {
+    runProtected(
+      'deleteCategory',
+      [categoryId],
+      function () {
+        // 重新整份 listCategories 拿最新狀態——刪掉的父層底下的子分類,
+        // 依 schema.sql 的 on delete set null 會變成新的頂層分類,
+        // 重新抓資料就會自然反映出來,不用手動搬動 DOM。
+        loadCategoryTree();
+        showToast('已刪除');
+      },
+      function (err) { showError(err.message); }
+    );
+  }
+
+  document.getElementById('btn-add-top-category').addEventListener('click', function () {
+    var input = document.getElementById('new-top-category-name');
+    var name = input.value.trim();
+    if (!name) { showError('請輸入分類名稱'); return; }
+
+    var btn = document.getElementById('btn-add-top-category');
+    btn.disabled = true;
+    btn.textContent = '新增中…';
+
+    runProtected(
+      'createCategory',
+      [name, null],
+      function () {
+        btn.disabled = false;
+        btn.textContent = '新增';
+        input.value = '';
+        loadCategoryTree();
+        showToast('已新增分類');
+      },
+      function (err) {
+        btn.disabled = false;
+        btn.textContent = '新增';
+        showError(err.message);
+      }
+    );
+  });
+
+  // 進入頁面時自動載入文章列表,不需要使用者先做任何操作——除非網址帶了
+  // ?article=<id>(share-link/01),這時直接跳到該篇文章的詳情頁。
+  loadCategoryFilterOptions();
+  loadListTagFilterCache();
+  loadBatchCategoryOptions();
+  loadBatchTagCache();
+  initEasyMDE();
+  if (INITIAL_ARTICLE_ID) {
+    openArticleDetailFromShareLink(INITIAL_ARTICLE_ID);
+  } else {
+    loadArticleList();
+  }
+
+  /**
+   * 標籤管理(ticket tag-management/02)——互動模式照抄分類管理的
+   * view/edit row 切換,不是重新設計一套。標籤沒有樹狀結構,也沒有獨立的
+   * 「新增標籤」入口(標籤只透過文章存檔時的 findOrCreateTag_ 建立)。
+   */
+  var cachedTagsForManager = [];
+
+  function loadTagManagerList() {
+    google.script.run
+      .withSuccessHandler(function (tags) {
+        cachedTagsForManager = tags || [];
+        renderTagManagerList();
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listTags();
+  }
+
+  function renderTagManagerList() {
+    var container = document.getElementById('tag-manager-list');
+    container.innerHTML = '';
+    cachedTagsForManager.forEach(function (tag) {
+      container.appendChild(buildTagNode(tag));
+    });
+  }
+
+  function buildTagNode(tag) {
+    var node = document.createElement('div');
+    node.className = 'tag-node';
+
+    var row = document.createElement('div');
+    row.className = 'tag-node__row';
+    node.appendChild(row);
+
+    function renderViewRow() {
+      row.innerHTML = '';
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'tag-node__name';
+      nameSpan.textContent = tag.name;
+      row.appendChild(nameSpan);
+
+      var renameBtn = document.createElement('button');
+      renameBtn.className = 'btn tag-node__action';
+      renameBtn.textContent = '改名';
+      renameBtn.addEventListener('click', renderEditRow);
+      row.appendChild(renameBtn);
+
+      var mergeBtn = document.createElement('button');
+      mergeBtn.className = 'btn tag-node__action';
+      mergeBtn.textContent = '合併至…';
+      mergeBtn.addEventListener('click', renderMergeRow);
+      row.appendChild(mergeBtn);
+
+      var deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn tag-node__action tag-node__delete';
+      deleteBtn.textContent = '刪除';
+      deleteBtn.addEventListener('click', handleDeleteTag);
+      row.appendChild(deleteBtn);
+    }
+
+    function renderEditRow() {
+      row.innerHTML = '';
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'tag-node__rename-input';
+      input.value = tag.name;
+      row.appendChild(input);
+
+      var saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-primary tag-node__action';
+      saveBtn.textContent = '儲存';
+      row.appendChild(saveBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn tag-node__action';
+      cancelBtn.textContent = '取消';
+      cancelBtn.addEventListener('click', renderViewRow);
+      row.appendChild(cancelBtn);
+
+      saveBtn.addEventListener('click', function () {
+        var newName = input.value.trim();
+        if (!newName) { showError('標籤名稱不能是空的'); return; }
+
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        saveBtn.textContent = '儲存中…';
+
+        runProtected(
+          'renameTag',
+          [tag.id, newName],
+          function (updated) {
+            tag.name = updated.name;
+            renderViewRow();
+            showToast('已更新');
+          },
+          function (err) {
+            saveBtn.disabled = false;
+            cancelBtn.disabled = false;
+            saveBtn.textContent = '儲存';
+            showError(err.message);
+          }
+        );
+      });
+
+      input.focus();
+    }
+
+    function renderMergeRow() {
+      row.innerHTML = '';
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'tag-node__name';
+      nameSpan.textContent = tag.name;
+      row.appendChild(nameSpan);
+
+      var select = document.createElement('select');
+      select.className = 'tag-node__merge-select';
+      cachedTagsForManager
+        .filter(function (t) { return t.id !== tag.id; })
+        .forEach(function (t) {
+          var opt = document.createElement('option');
+          opt.value = t.id;
+          opt.textContent = t.name;
+          select.appendChild(opt);
+        });
+      row.appendChild(select);
+
+      var confirmBtn = document.createElement('button');
+      confirmBtn.className = 'btn btn-primary tag-node__action';
+      confirmBtn.textContent = '合併';
+      row.appendChild(confirmBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn tag-node__action';
+      cancelBtn.textContent = '取消';
+      cancelBtn.addEventListener('click', renderViewRow);
+      row.appendChild(cancelBtn);
+
+      confirmBtn.addEventListener('click', function () {
+        if (!select.value) { showError('沒有其他標籤可以合併'); return; }
+
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        confirmBtn.textContent = '合併中…';
+
+        runProtected(
+          'mergeTags',
+          [tag.id, select.value],
+          function () {
+            showToast('已合併');
+            // 來源標籤消失、目標標籤內容可能變化,整份重抓比手動搬運可靠。
+            loadTagManagerList();
+          },
+          function (err) {
+            confirmBtn.disabled = false;
+            cancelBtn.disabled = false;
+            confirmBtn.textContent = '合併';
+            showError(err.message);
+          }
+        );
+      });
+    }
+
+    function handleDeleteTag() {
+      google.script.run
+        .withSuccessHandler(function (usage) {
+          var message = usage.count > 0
+            ? ('這個標籤目前用在 ' + usage.count + ' 篇文章,確定要刪除嗎?')
+            : '確定要刪除這個標籤嗎?';
+          if (!window.confirm(message)) return;
+
+          runProtected(
+            'deleteTag',
+            [tag.id],
+            function () {
+              showToast('已刪除');
+              loadTagManagerList();
+            },
+            function (err) { showError(err.message); }
+          );
+        })
+        .withFailureHandler(function (err) { showError(err.message); })
+        .countTagUsage(tag.id);
+    }
+
+    renderViewRow();
+    return node;
+  }
+</script>

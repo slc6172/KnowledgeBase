@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/highlight.js/latest/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/highlight.js/latest/styles/atom-one-light.min.css">
+  <style>
+  :root {
+    --color-bg: #F6F4F0;
+    --color-surface: #FFFFFF;
+    --color-ink: #2A2926;
+    --color-ink-muted: #6B6862;
+    --color-primary: #3D5C4E;
+    --color-primary-hover: #33503F;
+    --color-primary-soft: #E4EBE7;
+    --color-accent: #B08B4F;
+    --color-accent-soft: #F3EADA;
+    --color-accent-ink: #6B4E22;
+    --color-border: #E4E0D8;
+    --color-draft: #9C9890;
+    --color-danger: #A3402F;
+    --color-danger-soft: #F6E7E3;
+    --font-display: 'Noto Serif TC', serif;
+    --font-body: 'Noto Sans TC', 'Helvetica Neue', sans-serif;
+    --font-mono: 'Noto Sans Mono', ui-monospace, 'SFMono-Regular', monospace;
+    --radius: 8px;
+    --radius-lg: 14px;
+    --content-width: 880px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    line-height: 1.35;
+    margin: 0 0 0.6em;
+  }
+
+  a { color: var(--color-primary); }
+
+  code, pre {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+
+  /* 頂部導覽列 */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.9rem 1.75rem;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .topbar__brand {
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--color-ink);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+  .topbar__brand:hover { color: var(--color-primary); }
+
+  .topbar__nav {
+    display: flex;
+    gap: 0.6rem;
+  }
+
+  /* 主內容區 */
+  .content {
+    max-width: var(--content-width);
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  .view.hidden { display: none; }
+
+  /* 通用的隱藏 class,給不屬於特定元件的元素用(如 editor-attachment-section) */
+  .hidden { display: none; }
+
+  .empty-state {
+    color: var(--color-ink-muted);
+    text-align: center;
+    padding: 3rem 1rem;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-lg);
+  }
+
+  /* 按鈕 */
+  button, .btn {
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+
+  button:hover, .btn:hover { border-color: var(--color-ink-muted); }
+
+  button:disabled, .btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: #FFFFFF;
+  }
+
+  .btn-primary:hover { background: var(--color-primary-hover); }
+
+  /* 表單元件 */
+  input[type="text"],
+  input[type="search"],
+  input[type="url"],
+  textarea,
+  select {
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    padding: 0.55rem 0.8rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
+  }
+
+  /* 狀態徽記(印章風格) */
+  .seal {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    font-weight: 500;
+  }
+
+  .seal::before {
+    content: '';
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .seal--published {
+    color: var(--color-primary);
+  }
+  .seal--published::before {
+    background: var(--color-primary);
+  }
+
+  .seal--draft {
+    color: var(--color-ink-muted);
+  }
+  .seal--draft::before {
+    background: transparent;
+    border: 2px solid var(--color-draft);
+  }
+
+  /* 標籤 */
+  .tag {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--color-accent-soft);
+    color: var(--color-accent-ink);
+    margin-right: 4px;
+  }
+
+  /* 卡片(文章列表用) */
+  .article-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+    cursor: pointer;
+  }
+  .article-card:hover { border-color: var(--color-ink-muted); }
+
+  .article-card__title {
+    font-family: var(--font-display);
+    font-size: 1.2rem;
+    margin: 0 0 0.4em;
+  }
+
+  .article-card__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.82rem;
+    color: var(--color-ink-muted);
+  }
+
+  .article-card__snippet {
+    color: var(--color-ink-muted);
+    margin: 0 0 0.7rem;
+  }
+
+  .article-card__tags .tag {
+    margin-bottom: 4px;
+  }
+
+  /* 搜尋列 */
+  .search-bar {
+    display: flex;
+    gap: 0.6rem;
+    margin-bottom: 1.5rem;
+  }
+  .search-bar input { flex: 1; }
+
+  /* 訊息 toast */
+  .toast {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--color-ink);
+    color: var(--color-bg);
+    padding: 0.7rem 1.4rem;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    z-index: 100;
+  }
+  .toast.hidden { display: none; }
+  .toast--error {
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+  }
+
+  /* 文章編輯表單 */
+  .field { margin-bottom: 1.1rem; }
+  .field label {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--color-ink-muted);
+    margin-bottom: 0.3rem;
+  }
+  .field input[type="text"],
+  .field select {
+    width: 100%;
+  }
+
+  .editor-actions {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 1.5rem;
+  }
+
+  /* 標籤輸入(chips + 自動建議) */
+  .tag-input {
+    position: relative;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.7rem;
+    background: var(--color-surface);
+  }
+  .tag-input__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .tag--removable {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .tag__remove {
+    border: none;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+    font-size: 0.95em;
+    color: inherit;
+    line-height: 1;
+  }
+  #editor-tag-input {
+    border: none;
+    padding: 0.3rem 0;
+    width: 100%;
+  }
+  #editor-tag-input:focus { box-shadow: none; }
+  .tag-input__suggestions {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    margin-top: 4px;
+    max-height: 180px;
+    overflow-y: auto;
+    z-index: 20;
+    box-shadow: 0 4px 14px rgba(42, 41, 38, 0.08);
+  }
+  .tag-input__suggestions.hidden { display: none; }
+  .tag-input__suggestion {
+    padding: 0.45rem 0.7rem;
+    cursor: pointer;
+    font-size: 0.88rem;
+  }
+  .tag-input__suggestion:hover { background: var(--color-primary-soft); }
+
+  /* EasyMDE 微調,貼近 F6 字體/邊框調性 */
+  .CodeMirror {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    border-color: var(--color-border);
+  }
+  .editor-toolbar { border-color: var(--color-border); }
+
+  /* 文章詳情 */
+  .detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.4rem;
+  }
+  .detail-header__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    font-size: 0.85rem;
+    color: var(--color-ink-muted);
+  }
+  .detail-tags { margin: 0.6rem 0 0; }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: 2.2rem 0;
+  }
+
+  .detail-content { margin: 1.5rem 0 2.5rem; }
+  .detail-content h1,
+  .detail-content h2,
+  .detail-content h3 {
+    font-family: var(--font-display);
+    margin-top: 1.4em;
+  }
+  .detail-content p { margin: 0 0 1em; }
+  .detail-content code {
+    background: var(--color-accent-soft);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+  }
+  .detail-content pre {
+    background: var(--color-ink);
+    color: var(--color-bg);
+    padding: 1rem;
+    border-radius: var(--radius);
+    overflow-x: auto;
+  }
+  .detail-content pre code { background: none; padding: 0; color: inherit; }
+  .detail-content blockquote {
+    border-left: 3px solid var(--color-accent);
+    margin: 0 0 1em;
+    padding-left: 1rem;
+    color: var(--color-ink-muted);
+  }
+  .detail-content ul, .detail-content ol { padding-left: 1.4em; }
+
+  /* 附件清單與上傳 */
+  .attachment-item { border-bottom: 1px solid var(--color-border); }
+  .attachment-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.7rem 0;
+  }
+  .attachment-row__type {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--color-accent-ink);
+    background: var(--color-accent-soft);
+    padding: 2px 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .attachment-row__label { flex: 1; }
+  .attachment-row__size {
+    font-size: 0.78rem;
+    color: var(--color-ink-muted);
+  }
+  .attachment-row__preview,
+  .attachment-row__remove {
+    font-size: 0.82rem;
+    padding: 0.35rem 0.8rem;
+  }
+
+  .attachment-preview { padding: 0 0 1.1rem; }
+  .attachment-preview.hidden { display: none; }
+  .attachment-preview__image {
+    max-width: 100%;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    display: block;
+  }
+  .attachment-preview__frame {
+    width: 100%;
+    height: 520px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+  }
+  .attachment-preview pre {
+    background: var(--color-ink);
+    color: var(--color-bg);
+    padding: 1rem;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    max-height: 420px;
+  }
+  .attachment-preview__markdown {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1rem 1.3rem;
+    background: var(--color-surface);
+  }
+
+  .attachment-upload {
+    margin-top: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+  .attachment-upload__file,
+  .attachment-upload__url {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .attachment-upload__url input[type="url"] { flex: 1; min-width: 200px; }
+  .attachment-upload__url input[type="text"] { flex: 1; min-width: 160px; }
+
+  /* 分類管理 */
+  .category-new-top {
+    display: flex;
+    gap: 0.6rem;
+    margin-bottom: 1.6rem;
+  }
+  .category-new-top input { flex: 1; max-width: 320px; }
+
+  .category-node {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+    margin-bottom: 0.9rem;
+    overflow: hidden;
+  }
+  .category-node--child {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    border-radius: 0;
+    margin-bottom: 0;
+    background: var(--color-bg);
+  }
+  .category-node__row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.8rem 1.1rem;
+  }
+  .category-node__name {
+    flex: 1;
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+  }
+  .category-node--child .category-node__name {
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+  }
+  .category-node--child .category-node__name::before {
+    content: '\2514\00a0';
+    color: var(--color-ink-muted);
+  }
+  .category-node__action {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.7rem;
+    flex-shrink: 0;
+  }
+  .category-node__delete { color: var(--color-danger); }
+  .category-node__rename-input { flex: 1; }
+  .category-node__add-child-form {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0 1.1rem 0.9rem;
+  }
+  .category-node__add-child-form input { flex: 1; max-width: 260px; }
+</style>
+
+</head>
+<body>
+<div style="background:#2A2926;color:#F6F4F0;text-align:center;padding:6px;font-size:13px;font-family:sans-serif;">靜態預覽——這次驗證:發布保存最新分類、分類篩選、附件可在編輯頁直接加、回首頁</div>
+
+  <header class="topbar">
+    <button id="btn-home" class="topbar__brand" type="button">知識庫</button>
+    <nav class="topbar__nav">
+      <button id="btn-new-article" class="btn btn-primary">新增文章</button>
+      <button id="btn-category-manager" class="btn">分類管理</button>
+    </nav>
+  </header>
+
+  <main class="content">
+    <section id="view-article-list" class="view">
+  <div class="search-bar">
+    <input type="search" id="search-input" placeholder="搜尋文章…">
+    <select id="list-status-filter">
+      <option value="published" selected>已發布</option>
+      <option value="draft">草稿</option>
+      <option value="all">全部</option>
+    </select>
+    <select id="list-category-filter">
+      <option value="">全部分類</option>
+    </select>
+    <button id="btn-search" class="btn btn-primary">搜尋</button>
+  </div>
+
+  <div id="article-list-results"></div>
+</section>
+
+    <section id="view-article-detail" class="view hidden">
+  <div class="detail-header">
+    <div class="detail-header__meta">
+      <span id="detail-seal" class="seal"></span>
+      <span id="detail-category"></span>
+      <span id="detail-updated"></span>
+    </div>
+    <button id="btn-edit-article" class="btn">編輯</button>
+  </div>
+
+  <h2 id="detail-title"></h2>
+  <div id="detail-tags" class="detail-tags"></div>
+  <div id="detail-content" class="detail-content"></div>
+
+  <hr class="divider">
+
+  <h3>附件</h3>
+  <div id="detail-attachment-panel"></div>
+</section>
+
+    <section id="view-article-editor" class="view hidden">
+  <h2 id="editor-heading">新增文章</h2>
+
+  <div class="field">
+    <label for="editor-title">標題</label>
+    <input type="text" id="editor-title" placeholder="文章標題">
+  </div>
+
+  <div class="field">
+    <label for="editor-content">內容</label>
+    <textarea id="editor-content"></textarea>
+  </div>
+
+  <div class="field">
+    <label for="editor-category">分類</label>
+    <select id="editor-category">
+      <option value="">未分類</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="editor-tag-input">標籤</label>
+    <div class="tag-input">
+      <div class="tag-input__chips" id="editor-tag-chips"></div>
+      <input type="text" id="editor-tag-input" placeholder="輸入標籤名稱,Enter 新增…" autocomplete="off">
+      <div class="tag-input__suggestions hidden" id="editor-tag-suggestions"></div>
+    </div>
+  </div>
+
+  <div class="editor-actions">
+    <button id="btn-save-draft" class="btn">存草稿</button>
+    <button id="btn-publish" class="btn btn-primary">發布</button>
+  </div>
+
+  <!-- 附件區塊(G3):存成草稿、拿到文章 id 之前先隱藏——沒有 id 就沒地方可以
+       掛附件記錄。存檔成功後這個區塊會顯示出來,不用再跳到詳情頁才能附加。 -->
+  <div id="editor-attachment-section" class="hidden">
+    <hr class="divider">
+    <h3>附件</h3>
+    <div id="editor-attachment-panel"></div>
+  </div>
+</section>
+
+    <section id="view-category-manager" class="view hidden">
+  <h2>分類管理</h2>
+
+  <div class="category-new-top">
+    <input type="text" id="new-top-category-name" placeholder="新增頂層分類名稱">
+    <button id="btn-add-top-category" class="btn btn-primary">新增</button>
+  </div>
+
+  <div id="category-tree"></div>
+</section>
+
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script>
+(function () {
+  var mockArticles = [
+    { id: "a1", title: "React Hooks 心得整理", content_md: "# React Hooks\n\n心得內容，包含 `useEffect` 範例。",
+      status: "published", category_id: "c2", categories: { id: "c2", name: "React" },
+      tags: [{ id: "t1", name: "react" }], updated_at: "2026-08-10T09:00:00Z" },
+    { id: "a2", title: "Supabase RLS 設計筆記（草稿）", content_md: "先記一下。",
+      status: "draft", category_id: "c5", categories: { id: "c5", name: "後端" },
+      tags: [{ id: "t3", name: "supabase" }], updated_at: "2026-08-14T15:30:00Z" }
+  ];
+  var mockCategories = [
+    { id: "c1", name: "前端", parent_id: null },
+    { id: "c2", name: "React", parent_id: "c1" },
+    { id: "c5", name: "後端", parent_id: null }
+  ];
+  var mockTags = [{ id: "t1", name: "react" }, { id: "t3", name: "supabase" }];
+  var mockAttachments = { a1: [ { id:"att1", article_id:"a1", type:"url", url:"https://react.dev", file_name:"React 文件" } ], a2: [] };
+  var nextAttId = 10;
+
+  function findArticle(id) { for (var i=0;i<mockArticles.length;i++) if (mockArticles[i].id===id) return mockArticles[i]; return null; }
+
+  window.google = { script: { run: {
+    withSuccessHandler: function (fn) { this._success = fn; return this; },
+    withFailureHandler: function (fn) { this._failure = fn; return this; },
+    listArticles: function (opts) {
+      var self=this;
+      setTimeout(function(){
+        var list=mockArticles;
+        if(opts&&opts.status) list=list.filter(function(a){return a.status===opts.status;});
+        if(opts&&opts.categoryId) list=list.filter(function(a){return a.category_id===opts.categoryId;});
+        self._success(list);
+      },200);
+    },
+    searchArticles: function (q,opts) {
+      var self=this;
+      setTimeout(function(){
+        var qq=(q||"").toLowerCase();
+        var list=mockArticles.filter(function(a){return a.title.toLowerCase().indexOf(qq)!==-1||a.content_md.toLowerCase().indexOf(qq)!==-1;});
+        if(!opts||opts.onlyPublished!==false) list=list.filter(function(a){return a.status==="published";});
+        self._success(list);
+      },200);
+    },
+    getArticle: function (id) { var self=this; setTimeout(function(){var f=findArticle(id); if(f) self._success(f); else self._failure({message:"找不到文章: "+id});},150); },
+    createArticle: function (data) { var self=this; setTimeout(function(){ var n={id:"new-"+Date.now(),title:data.title,content_md:data.content_md,status:"draft",category_id:data.category_id,categories:null,tags:(data.tag_names||[]).map(function(n){return{id:"tmp-"+n,name:n};}),updated_at:new Date().toISOString()}; mockArticles.push(n); mockAttachments[n.id]=[]; self._success(n); },300); },
+    updateArticle: function (id, data) { var self=this; setTimeout(function(){ var f=findArticle(id); if(!f){self._failure({message:"找不到文章: "+id});return;} f.title=data.title; f.content_md=data.content_md; f.category_id=data.category_id; f.categories=mockCategories.filter(function(c){return c.id===data.category_id;})[0]||null; f.tags=(data.tag_names||[]).map(function(n){return{id:"tmp-"+n,name:n};}); self._success(f); },300); },
+    setArticleStatus: function (id, status) { var self=this; setTimeout(function(){ var f=findArticle(id); if(!f){self._failure({message:"找不到文章: "+id});return;} f.status=status; self._success(f); },300); },
+    listCategories: function () { var self=this; setTimeout(function(){self._success(mockCategories);},150); },
+    listTags: function () { var self=this; setTimeout(function(){self._success(mockTags);},150); },
+    listAttachments: function (articleId) { var self=this; setTimeout(function(){self._success(mockAttachments[articleId]||[]);},200); },
+    uploadAttachmentFile: function (articleId, fileName, base64Data) { var self=this; setTimeout(function(){ var att={id:"att"+(nextAttId++),article_id:articleId,type:"code",file_name:fileName,file_path:articleId+"/x",file_size:Math.round(base64Data.length*0.75)}; if(!mockAttachments[articleId]) mockAttachments[articleId]=[]; mockAttachments[articleId].push(att); self._success(att); },300); },
+    addAttachmentUrl: function (articleId, url, label) { var self=this; setTimeout(function(){ var att={id:"att"+(nextAttId++),article_id:articleId,type:"url",url:url,file_name:label||url}; if(!mockAttachments[articleId]) mockAttachments[articleId]=[]; mockAttachments[articleId].push(att); self._success(att); },300); },
+    deleteAttachment: function (attachmentId) { var self=this; setTimeout(function(){ Object.keys(mockAttachments).forEach(function(aid){mockAttachments[aid]=mockAttachments[aid].filter(function(a){return a.id!==attachmentId;});}); self._success({deleted:true,id:attachmentId}); },200); }
+  }}};
+})();
+</script>
+<script>
+  /**
+   * 視圖切換——單頁 SPA 風格,不改變網址、不重新整理頁面(F1 決策)。
+   */
+  function showView(name) {
+    document.querySelectorAll('.view').forEach(function (el) {
+      el.classList.toggle('hidden', el.id !== 'view-' + name);
+    });
+  }
+
+  /**
+   * 共用的訊息提示,之後每個視圖的 google.script.run failure handler
+   * 都會呼叫 showError(err.message)。
+   */
+  var toastTimer = null;
+
+  function showToast(message, isError) {
+    var toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.classList.remove('hidden');
+    toast.classList.toggle('toast--error', !!isError);
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toast.classList.add('hidden');
+    }, 4000);
+  }
+
+  function showError(message) {
+    showToast(message, true);
+  }
+
+  document.getElementById('btn-home').addEventListener('click', function () {
+    goHome();
+  });
+
+  document.getElementById('btn-new-article').addEventListener('click', function () {
+    resetEditorForm();
+    enterEditor();
+    showView('article-editor');
+  });
+
+  document.getElementById('btn-category-manager').addEventListener('click', function () {
+    showView('category-manager');
+    loadCategoryTree();
+  });
+
+  /**
+   * 文章列表 + 搜尋(ticket 02)
+   */
+  function escapeHtml(value) {
+    var div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+  }
+
+  function formatDate(isoString) {
+    if (!isoString) return '';
+    var d = new Date(isoString);
+    if (isNaN(d.getTime())) return '';
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
+
+  function buildSnippet(contentMd, maxLen) {
+    maxLen = maxLen || 100;
+    var text = (contentMd || '')
+      .replace(/[#*`_>]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen) + '…';
+  }
+
+  function setSearchBusy(isBusy) {
+    var btn = document.getElementById('btn-search');
+    btn.disabled = isBusy;
+    btn.textContent = isBusy ? '搜尋中…' : '搜尋';
+  }
+
+  function renderArticleCards(articles) {
+    var container = document.getElementById('article-list-results');
+    container.innerHTML = '';
+
+    if (!articles || articles.length === 0) {
+      container.innerHTML = '<p class="empty-state">沒有符合的文章。</p>';
+      return;
+    }
+
+    articles.forEach(function (article) {
+      var sealClass = article.status === 'published' ? 'seal--published' : 'seal--draft';
+      var sealLabel = article.status === 'published' ? '已發布' : '草稿';
+      var categoryName = (article.categories && article.categories.name) || '未分類';
+      var tagsHtml = (article.tags || [])
+        .map(function (tag) {
+          return '<span class="tag">' + escapeHtml(tag.name) + '</span>';
+        })
+        .join('');
+
+      var card = document.createElement('div');
+      card.className = 'article-card';
+      card.innerHTML =
+        '<div class="article-card__meta">' +
+          '<span class="seal ' + sealClass + '">' + sealLabel + '</span>' +
+          '<span>' + escapeHtml(categoryName) + '</span>' +
+          '<span>' + formatDate(article.updated_at) + '</span>' +
+        '</div>' +
+        '<h3 class="article-card__title">' + escapeHtml(article.title) + '</h3>' +
+        '<p class="article-card__snippet">' + escapeHtml(buildSnippet(article.content_md)) + '</p>' +
+        '<div class="article-card__tags">' + tagsHtml + '</div>';
+
+      card.addEventListener('click', function () {
+        openArticleDetail(article.id);
+      });
+
+      container.appendChild(card);
+    });
+  }
+
+  function getSelectedStatusFilter() {
+    var select = document.getElementById('list-status-filter');
+    return select ? select.value : 'published';
+  }
+
+  function getSelectedCategoryFilter() {
+    var select = document.getElementById('list-category-filter');
+    return select ? select.value : '';
+  }
+
+  /**
+   * 列表篩選用的分類下拉——單純平鋪列出(子分類用縮排標示跟哪個頂層同組),
+   * 不像分類管理頁那樣做完整樹狀操作,這裡只需要選一個分類當篩選條件。
+   */
+  function loadCategoryFilterOptions() {
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        var select = document.getElementById('list-category-filter');
+        var currentValue = select.value;
+        var topLevel = categories.filter(function (c) { return !c.parent_id; });
+        var children = categories.filter(function (c) { return c.parent_id; });
+
+        select.innerHTML = '<option value="">全部分類</option>';
+        topLevel.forEach(function (top) {
+          var topOpt = document.createElement('option');
+          topOpt.value = top.id;
+          topOpt.textContent = top.name;
+          select.appendChild(topOpt);
+
+          children
+            .filter(function (c) { return c.parent_id === top.id; })
+            .forEach(function (child) {
+              var childOpt = document.createElement('option');
+              childOpt.value = child.id;
+              childOpt.textContent = '\u3000\u2514 ' + child.name;
+              select.appendChild(childOpt);
+            });
+        });
+        select.value = currentValue;
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  function loadArticleList() {
+    setSearchBusy(true);
+    var statusFilter = getSelectedStatusFilter();
+    var categoryFilter = getSelectedCategoryFilter();
+    var opts = {};
+    if (statusFilter !== 'all') opts.status = statusFilter;
+    if (categoryFilter) opts.categoryId = categoryFilter;
+
+    google.script.run
+      .withSuccessHandler(function (articles) {
+        setSearchBusy(false);
+        renderArticleCards(articles);
+      })
+      .withFailureHandler(function (err) {
+        setSearchBusy(false);
+        showError(err.message);
+      })
+      .listArticles(opts);
+  }
+
+  function performSearch(queryText) {
+    setSearchBusy(true);
+    var statusFilter = getSelectedStatusFilter();
+    var categoryFilter = getSelectedCategoryFilter();
+    // hybrid_search_articles 只支援「只看已發布」或「全部都看」,沒有「只看草稿」
+    // 也沒有分類篩選——選草稿或有指定分類時,先用 onlyPublished:false 拿到全部,
+    // 再前端篩一次。
+    var searchOpts = { onlyPublished: statusFilter === 'published' };
+
+    google.script.run
+      .withSuccessHandler(function (articles) {
+        setSearchBusy(false);
+        var filtered = articles;
+        if (statusFilter === 'draft') {
+          filtered = filtered.filter(function (a) { return a.status === 'draft'; });
+        }
+        if (categoryFilter) {
+          filtered = filtered.filter(function (a) { return a.category_id === categoryFilter; });
+        }
+        renderArticleCards(filtered);
+      })
+      .withFailureHandler(function (err) {
+        setSearchBusy(false);
+        showError(err.message);
+      })
+      .searchArticles(queryText, searchOpts);
+  }
+
+  document.getElementById('btn-search').addEventListener('click', function () {
+    var query = document.getElementById('search-input').value.trim();
+    if (query) {
+      performSearch(query);
+    } else {
+      loadArticleList();
+    }
+  });
+
+  document.getElementById('search-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      document.getElementById('btn-search').click();
+    }
+  });
+
+  document.getElementById('list-status-filter').addEventListener('change', function () {
+    document.getElementById('btn-search').click();
+  });
+
+  document.getElementById('list-category-filter').addEventListener('change', function () {
+    document.getElementById('btn-search').click();
+  });
+
+  /**
+   * 回首頁——重置搜尋狀態、狀態/分類篩選回預設,重新載入列表。
+   * 目前是唯一能從詳情/編輯/分類管理畫面回到文章列表的入口。
+   */
+  function goHome() {
+    document.getElementById('search-input').value = '';
+    var statusSelect = document.getElementById('list-status-filter');
+    if (statusSelect) statusSelect.value = 'published';
+    var categorySelect = document.getElementById('list-category-filter');
+    if (categorySelect) categorySelect.value = '';
+    showView('article-list');
+    loadArticleList();
+    loadCategoryFilterOptions();
+  }
+
+  /**
+   * 文章詳情 + 附件(ticket 04)
+   */
+  var currentDetailArticleId = null;
+
+  function openArticleDetail(articleId) {
+    currentDetailArticleId = articleId;
+    showView('article-detail');
+    loadArticleDetail(articleId);
+    mountAttachmentPanel(document.getElementById('detail-attachment-panel'), articleId);
+  }
+
+  function loadArticleDetail(articleId) {
+    google.script.run
+      .withSuccessHandler(function (article) {
+        renderArticleDetail(article);
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .getArticle(articleId);
+  }
+
+  function renderArticleDetail(article) {
+    var sealClass = article.status === 'published' ? 'seal--published' : 'seal--draft';
+    var sealLabel = article.status === 'published' ? '已發布' : '草稿';
+
+    var seal = document.getElementById('detail-seal');
+    seal.className = 'seal ' + sealClass;
+    seal.textContent = sealLabel;
+
+    document.getElementById('detail-category').textContent =
+      (article.categories && article.categories.name) || '未分類';
+    document.getElementById('detail-updated').textContent = formatDate(article.updated_at);
+    document.getElementById('detail-title').textContent = article.title;
+
+    document.getElementById('detail-tags').innerHTML = (article.tags || [])
+      .map(function (t) { return '<span class="tag">' + escapeHtml(t.name) + '</span>'; })
+      .join('');
+
+    document.getElementById('detail-content').innerHTML = marked.parse(article.content_md || '');
+  }
+
+  document.getElementById('btn-edit-article').addEventListener('click', function () {
+    if (currentDetailArticleId) openArticleEditor(currentDetailArticleId);
+  });
+
+  function formatFileSize(bytes) {
+    if (bytes === null || bytes === undefined) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  var PREVIEWABLE_TYPES = ['photo', 'pdf', 'office_doc', 'code', 'md_file'];
+
+  /**
+   * 附件線上預覽(ticket 05)——只在使用者點「預覽」展開時才呼叫
+   * getSignedAttachmentUrl/getTextAttachmentContent,不是列表一渲染就對每筆
+   * 都預先呼叫。展開過一次後用 data-loaded 記住,收合再展開不會重複打 API。
+   */
+  function toggleAttachmentPreview(att, previewBox, btn) {
+    var isHidden = previewBox.classList.contains('hidden');
+    if (!isHidden) {
+      previewBox.classList.add('hidden');
+      btn.textContent = '預覽';
+      return;
+    }
+
+    previewBox.classList.remove('hidden');
+    btn.textContent = '收合';
+
+    if (previewBox.getAttribute('data-loaded') === '1') return;
+
+    previewBox.innerHTML = '<p class="empty-state">載入中…</p>';
+
+    if (att.type === 'photo' || att.type === 'pdf' || att.type === 'office_doc') {
+      loadSignedPreview(att, previewBox);
+    } else if (att.type === 'code' || att.type === 'md_file') {
+      loadTextPreview(att, previewBox);
+    }
+  }
+
+  function loadSignedPreview(att, previewBox) {
+    google.script.run
+      .withSuccessHandler(function (signedUrl) {
+        previewBox.setAttribute('data-loaded', '1');
+        previewBox.innerHTML = '';
+
+        if (att.type === 'photo') {
+          var img = document.createElement('img');
+          img.src = signedUrl;
+          img.alt = att.file_name;
+          img.className = 'attachment-preview__image';
+          previewBox.appendChild(img);
+        } else if (att.type === 'pdf') {
+          var iframe = document.createElement('iframe');
+          iframe.src = signedUrl;
+          iframe.className = 'attachment-preview__frame';
+          previewBox.appendChild(iframe);
+        } else if (att.type === 'office_doc') {
+          var viewerFrame = document.createElement('iframe');
+          viewerFrame.src = 'https://docs.google.com/viewer?url=' +
+            encodeURIComponent(signedUrl) + '&embedded=true';
+          viewerFrame.className = 'attachment-preview__frame';
+          previewBox.appendChild(viewerFrame);
+        }
+      })
+      .withFailureHandler(function (err) {
+        previewBox.innerHTML = '<p class="empty-state">' + escapeHtml(err.message) + '</p>';
+      })
+      .getSignedAttachmentUrl(att.id);
+  }
+
+  function loadTextPreview(att, previewBox) {
+    google.script.run
+      .withSuccessHandler(function (content) {
+        previewBox.setAttribute('data-loaded', '1');
+        previewBox.innerHTML = '';
+
+        if (att.type === 'md_file') {
+          var mdDiv = document.createElement('div');
+          mdDiv.className = 'detail-content attachment-preview__markdown';
+          mdDiv.innerHTML = marked.parse(content || '');
+          previewBox.appendChild(mdDiv);
+        } else {
+          var pre = document.createElement('pre');
+          var code = document.createElement('code');
+          code.textContent = content || '';
+          pre.appendChild(code);
+          previewBox.appendChild(pre);
+          hljs.highlightElement(code);
+        }
+      })
+      .withFailureHandler(function (err) {
+        previewBox.innerHTML = '<p class="empty-state">' + escapeHtml(err.message) + '</p>';
+      })
+      .getTextAttachmentContent(att.id);
+  }
+
+  function readFileAsBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var result = reader.result;
+        resolve(result.slice(result.indexOf(',') + 1));
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /**
+   * 附件清單 + 上傳/加連結區塊——掛進任一個容器元素,詳情頁跟編輯頁(G3)
+   * 都呼叫這個函式,共用同一份邏輯,不各寫一份。容器內的子元素一律用
+   * class + querySelector 定位,不用全域 id,兩個實例同時存在畫面上也不會互相
+   * 干擾(編輯頁的附件區塊 + 之後可能還在詳情頁的那份,id 不會撞名)。
+   *
+   * @return {{ refresh: function }} 呼叫端需要主動重新整理清單時可以呼叫
+   *   panel.refresh(),例如剛把文章存成草稿、第一次讓附件區塊出現的時候。
+   */
+  function mountAttachmentPanel(containerEl, articleId) {
+    containerEl.innerHTML =
+      '<div class="attachment-panel-list"></div>' +
+      '<div class="attachment-upload">' +
+        '<div class="attachment-upload__file">' +
+          '<input type="file" class="attachment-panel-file-input">' +
+          '<button type="button" class="btn attachment-panel-upload-btn">上傳檔案</button>' +
+        '</div>' +
+        '<div class="attachment-upload__url">' +
+          '<input type="url" class="attachment-panel-url-input" placeholder="https://…">' +
+          '<input type="text" class="attachment-panel-url-label" placeholder="顯示文字(選填)">' +
+          '<button type="button" class="btn attachment-panel-addurl-btn">加入連結</button>' +
+        '</div>' +
+      '</div>';
+
+    var listEl = containerEl.querySelector('.attachment-panel-list');
+    var fileInput = containerEl.querySelector('.attachment-panel-file-input');
+    var uploadBtn = containerEl.querySelector('.attachment-panel-upload-btn');
+    var urlInput = containerEl.querySelector('.attachment-panel-url-input');
+    var urlLabelInput = containerEl.querySelector('.attachment-panel-url-label');
+    var addUrlBtn = containerEl.querySelector('.attachment-panel-addurl-btn');
+
+    function renderList(attachments) {
+      listEl.innerHTML = '';
+
+      if (!attachments || attachments.length === 0) {
+        listEl.innerHTML = '<p class="empty-state">還沒有附件。</p>';
+        return;
+      }
+
+      attachments.forEach(function (att) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'attachment-item';
+
+        var row = document.createElement('div');
+        row.className = 'attachment-row';
+
+        var typeBadge = document.createElement('span');
+        typeBadge.className = 'attachment-row__type';
+        typeBadge.textContent = att.type;
+        row.appendChild(typeBadge);
+
+        if (att.type === 'url') {
+          var link = document.createElement('a');
+          link.href = att.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.className = 'attachment-row__label';
+          link.textContent = att.file_name || att.url;
+          row.appendChild(link);
+        } else {
+          var label = document.createElement('span');
+          label.className = 'attachment-row__label';
+          label.textContent = att.file_name;
+          row.appendChild(label);
+
+          if (att.file_size !== undefined) {
+            var size = document.createElement('span');
+            size.className = 'attachment-row__size';
+            size.textContent = formatFileSize(att.file_size);
+            row.appendChild(size);
+          }
+        }
+
+        var previewBox = document.createElement('div');
+        previewBox.className = 'attachment-preview hidden';
+
+        if (PREVIEWABLE_TYPES.indexOf(att.type) !== -1) {
+          var previewBtn = document.createElement('button');
+          previewBtn.className = 'btn attachment-row__preview';
+          previewBtn.textContent = '預覽';
+          previewBtn.addEventListener('click', function () {
+            toggleAttachmentPreview(att, previewBox, previewBtn);
+          });
+          row.appendChild(previewBtn);
+        }
+
+        var removeBtn = document.createElement('button');
+        removeBtn.className = 'btn attachment-row__remove';
+        removeBtn.textContent = '刪除';
+        removeBtn.addEventListener('click', function () {
+          google.script.run
+            .withSuccessHandler(function () { refresh(); })
+            .withFailureHandler(function (err) { showError(err.message); })
+            .deleteAttachment(att.id);
+        });
+        row.appendChild(removeBtn);
+
+        wrapper.appendChild(row);
+        wrapper.appendChild(previewBox);
+        listEl.appendChild(wrapper);
+      });
+    }
+
+    function refresh() {
+      listEl.innerHTML = '<p class="empty-state">載入中…</p>';
+      google.script.run
+        .withSuccessHandler(renderList)
+        .withFailureHandler(function (err) { showError(err.message); })
+        .listAttachments(articleId);
+    }
+
+    uploadBtn.addEventListener('click', function () {
+      var file = fileInput.files[0];
+      if (!file) {
+        showError('請先選擇檔案');
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = '上傳中…';
+
+      readFileAsBase64(file)
+        .then(function (base64Data) {
+          google.script.run
+            .withSuccessHandler(function () {
+              uploadBtn.disabled = false;
+              uploadBtn.textContent = '上傳檔案';
+              fileInput.value = '';
+              refresh();
+              showToast('已上傳');
+            })
+            .withFailureHandler(function (err) {
+              uploadBtn.disabled = false;
+              uploadBtn.textContent = '上傳檔案';
+              showError(err.message);
+            })
+            .uploadAttachmentFile(
+              articleId,
+              file.name,
+              base64Data,
+              file.type || 'application/octet-stream'
+            );
+        })
+        .catch(function () {
+          uploadBtn.disabled = false;
+          uploadBtn.textContent = '上傳檔案';
+          showError('讀取檔案失敗');
+        });
+    });
+
+    addUrlBtn.addEventListener('click', function () {
+      var url = urlInput.value.trim();
+      if (!url) {
+        showError('請輸入連結網址');
+        return;
+      }
+
+      addUrlBtn.disabled = true;
+      addUrlBtn.textContent = '新增中…';
+
+      google.script.run
+        .withSuccessHandler(function () {
+          addUrlBtn.disabled = false;
+          addUrlBtn.textContent = '加入連結';
+          urlInput.value = '';
+          urlLabelInput.value = '';
+          refresh();
+          showToast('已新增連結');
+        })
+        .withFailureHandler(function (err) {
+          addUrlBtn.disabled = false;
+          addUrlBtn.textContent = '加入連結';
+          showError(err.message);
+        })
+        .addAttachmentUrl(articleId, url, urlLabelInput.value.trim());
+    });
+
+    refresh();
+    return { refresh: refresh };
+  }
+
+  /**
+   * 文章編輯(ticket 03)
+   */
+  var easyMDEInstance = null;
+  var editingArticleId = null;
+  var editorTags = [];
+  var cachedCategories = [];
+  var cachedTags = [];
+
+  function initEasyMDE() {
+    if (easyMDEInstance) return;
+    easyMDEInstance = new EasyMDE({
+      element: document.getElementById('editor-content'),
+      spellChecker: false,
+      status: false,
+      placeholder: '用 Markdown 寫下內容…'
+    });
+  }
+
+  function renderCategoryOptions() {
+    var select = document.getElementById('editor-category');
+    var currentValue = select.value;
+    var topLevel = cachedCategories.filter(function (c) { return !c.parent_id; });
+    var children = cachedCategories.filter(function (c) { return c.parent_id; });
+
+    select.innerHTML = '<option value="">未分類</option>';
+    topLevel.forEach(function (top) {
+      var topOpt = document.createElement('option');
+      topOpt.value = top.id;
+      topOpt.textContent = top.name;
+      select.appendChild(topOpt);
+
+      children
+        .filter(function (c) { return c.parent_id === top.id; })
+        .forEach(function (child) {
+          var childOpt = document.createElement('option');
+          childOpt.value = child.id;
+          childOpt.textContent = '\u3000\u2514 ' + child.name; // 全形空白 + 樹狀符號,標示為子分類
+          select.appendChild(childOpt);
+        });
+    });
+    select.value = currentValue;
+  }
+
+  function loadCategoryOptions() {
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        cachedCategories = categories || [];
+        renderCategoryOptions();
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  function loadTagCache() {
+    google.script.run
+      .withSuccessHandler(function (tags) { cachedTags = tags || []; })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listTags();
+  }
+
+  function enterEditor() {
+    loadCategoryOptions();
+    loadTagCache();
+  }
+
+  function renderTagChips() {
+    var container = document.getElementById('editor-tag-chips');
+    container.innerHTML = '';
+    editorTags.forEach(function (name) {
+      var chip = document.createElement('span');
+      chip.className = 'tag tag--removable';
+      chip.textContent = name;
+
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'tag__remove';
+      remove.textContent = '\u00d7';
+      remove.setAttribute('aria-label', '移除標籤 ' + name);
+      remove.addEventListener('click', function () {
+        editorTags = editorTags.filter(function (t) { return t !== name; });
+        renderTagChips();
+      });
+
+      chip.appendChild(remove);
+      container.appendChild(chip);
+    });
+  }
+
+  function addEditorTag(name) {
+    name = (name || '').trim();
+    if (!name) return;
+    if (editorTags.indexOf(name) === -1) {
+      editorTags.push(name);
+      renderTagChips();
+    }
+    document.getElementById('editor-tag-input').value = '';
+    hideTagSuggestions();
+  }
+
+  function hideTagSuggestions() {
+    var box = document.getElementById('editor-tag-suggestions');
+    box.classList.add('hidden');
+    box.innerHTML = '';
+  }
+
+  function renderTagSuggestions(query) {
+    var box = document.getElementById('editor-tag-suggestions');
+    var q = query.toLowerCase();
+    if (!q) { hideTagSuggestions(); return; }
+
+    var matches = cachedTags
+      .filter(function (t) {
+        return t.name.toLowerCase().indexOf(q) !== -1 && editorTags.indexOf(t.name) === -1;
+      })
+      .slice(0, 8);
+
+    if (matches.length === 0) { hideTagSuggestions(); return; }
+
+    box.innerHTML = '';
+    matches.forEach(function (t) {
+      var item = document.createElement('div');
+      item.className = 'tag-input__suggestion';
+      item.textContent = t.name;
+      item.addEventListener('click', function () { addEditorTag(t.name); });
+      box.appendChild(item);
+    });
+    box.classList.remove('hidden');
+  }
+
+  document.getElementById('editor-tag-input').addEventListener('input', function (e) {
+    renderTagSuggestions(e.target.value);
+  });
+
+  document.getElementById('editor-tag-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addEditorTag(e.target.value);
+    }
+  });
+
+  /**
+   * 存草稿/發布成功後,或打開既有文章編輯時,顯示並掛上附件區塊(G3)。
+   * 沒有文章 id 就不會有這個區塊(見 resetEditorForm)。
+   */
+  function showEditorAttachmentSection(articleId) {
+    document.getElementById('editor-attachment-section').classList.remove('hidden');
+    mountAttachmentPanel(document.getElementById('editor-attachment-panel'), articleId);
+  }
+
+  function resetEditorForm() {
+    editingArticleId = null;
+    document.getElementById('editor-heading').textContent = '新增文章';
+    document.getElementById('editor-title').value = '';
+    if (easyMDEInstance) easyMDEInstance.value('');
+    document.getElementById('editor-category').value = '';
+    editorTags = [];
+    renderTagChips();
+    // 新文章還沒有 id,附件區塊先隱藏、清空(避免殘留上一篇文章的附件清單)。
+    document.getElementById('editor-attachment-section').classList.add('hidden');
+    document.getElementById('editor-attachment-panel').innerHTML = '';
+  }
+
+  function openArticleEditor(articleId) {
+    showView('article-editor');
+    document.getElementById('editor-heading').textContent = '編輯文章';
+    enterEditor();
+
+    google.script.run
+      .withSuccessHandler(function (article) {
+        editingArticleId = article.id;
+        document.getElementById('editor-title').value = article.title || '';
+        if (easyMDEInstance) easyMDEInstance.value(article.content_md || '');
+        document.getElementById('editor-category').value = article.category_id || '';
+        editorTags = (article.tags || []).map(function (t) { return t.name; });
+        renderTagChips();
+        showEditorAttachmentSection(article.id);
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .getArticle(articleId);
+  }
+
+  function readEditorForm() {
+    return {
+      title: document.getElementById('editor-title').value.trim(),
+      content_md: (easyMDEInstance ? easyMDEInstance.value() : '').trim(),
+      category_id: document.getElementById('editor-category').value || null,
+      tag_names: editorTags
+    };
+  }
+
+  function validateEditorForm(data) {
+    if (!data.title || !data.content_md) {
+      showError('請填寫標題與內容');
+      return false;
+    }
+    return true;
+  }
+
+  function setEditorBusy(isBusy) {
+    document.getElementById('btn-save-draft').disabled = isBusy;
+    document.getElementById('btn-publish').disabled = isBusy;
+  }
+
+  function saveDraft() {
+    var data = readEditorForm();
+    if (!validateEditorForm(data)) return;
+
+    setEditorBusy(true);
+    var btn = document.getElementById('btn-save-draft');
+    btn.textContent = '儲存中…';
+
+    function done(article) {
+      setEditorBusy(false);
+      btn.textContent = '存草稿';
+      editingArticleId = article.id;
+      document.getElementById('editor-heading').textContent = '編輯文章';
+      showEditorAttachmentSection(article.id);
+      showToast('已儲存');
+    }
+    function fail(err) {
+      setEditorBusy(false);
+      btn.textContent = '存草稿';
+      showError(err.message);
+    }
+
+    if (editingArticleId) {
+      google.script.run.withSuccessHandler(done).withFailureHandler(fail)
+        .updateArticle(editingArticleId, data);
+    } else {
+      google.script.run.withSuccessHandler(done).withFailureHandler(fail)
+        .createArticle(data);
+    }
+  }
+
+  function publishArticle() {
+    var data = readEditorForm();
+    if (!validateEditorForm(data)) return;
+
+    setEditorBusy(true);
+    var btn = document.getElementById('btn-publish');
+    btn.textContent = '發布中…';
+
+    function done() {
+      setEditorBusy(false);
+      btn.textContent = '發布';
+      document.getElementById('editor-heading').textContent = '編輯文章';
+      showEditorAttachmentSection(editingArticleId);
+      showToast('已發布');
+    }
+    function fail(err) {
+      setEditorBusy(false);
+      btn.textContent = '發布';
+      showError(err.message);
+    }
+
+    if (editingArticleId) {
+      // 先把表單上最新的內容存進去,再切換發布狀態——不然 setArticleStatus
+      // 不會動到 title/content_md/category_id/tags,發布出去的還是資料庫裡
+      // 上一次存檔時的舊資料。
+      google.script.run
+        .withSuccessHandler(function () {
+          google.script.run.withSuccessHandler(done).withFailureHandler(fail)
+            .setArticleStatus(editingArticleId, 'published');
+        })
+        .withFailureHandler(fail)
+        .updateArticle(editingArticleId, data);
+    } else {
+      google.script.run
+        .withSuccessHandler(function (created) {
+          editingArticleId = created.id;
+          google.script.run.withSuccessHandler(done).withFailureHandler(fail)
+            .setArticleStatus(created.id, 'published');
+        })
+        .withFailureHandler(fail)
+        .createArticle(data);
+    }
+  }
+
+  document.getElementById('btn-save-draft').addEventListener('click', saveDraft);
+  document.getElementById('btn-publish').addEventListener('click', publishArticle);
+
+  /**
+   * 分類管理(ticket 06)
+   */
+  var cachedCategoriesForManager = [];
+
+  function loadCategoryTree() {
+    var container = document.getElementById('category-tree');
+    container.innerHTML = '<p class="empty-state">載入中…</p>';
+    google.script.run
+      .withSuccessHandler(function (categories) {
+        cachedCategoriesForManager = categories || [];
+        renderCategoryTree();
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .listCategories();
+  }
+
+  function renderCategoryTree() {
+    var container = document.getElementById('category-tree');
+    container.innerHTML = '';
+
+    var topLevel = cachedCategoriesForManager.filter(function (c) { return !c.parent_id; });
+
+    if (topLevel.length === 0) {
+      container.innerHTML = '<p class="empty-state">還沒有分類。</p>';
+      return;
+    }
+
+    topLevel.forEach(function (top) {
+      container.appendChild(buildCategoryNode(top, true));
+    });
+  }
+
+  function buildCategoryNode(category, isTopLevel) {
+    var node = document.createElement('div');
+    node.className = 'category-node' + (isTopLevel ? '' : ' category-node--child');
+
+    var row = document.createElement('div');
+    row.className = 'category-node__row';
+    node.appendChild(row);
+
+    function renderViewRow() {
+      row.innerHTML = '';
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'category-node__name';
+      nameSpan.textContent = category.name;
+      row.appendChild(nameSpan);
+
+      var renameBtn = document.createElement('button');
+      renameBtn.className = 'btn category-node__action';
+      renameBtn.textContent = '改名';
+      renameBtn.addEventListener('click', renderEditRow);
+      row.appendChild(renameBtn);
+
+      // 子分類不顯示「新增子分類」,介面上就不讓使用者嘗試建第 3 層,
+      // 不用等後端的 2 層限制報錯才知道不行。
+      if (isTopLevel) {
+        var addChildBtn = document.createElement('button');
+        addChildBtn.className = 'btn category-node__action';
+        addChildBtn.textContent = '新增子分類';
+        addChildBtn.addEventListener('click', function () {
+          toggleAddChildForm(node, category);
+        });
+        row.appendChild(addChildBtn);
+      }
+
+      var deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn category-node__action category-node__delete';
+      deleteBtn.textContent = '刪除';
+      deleteBtn.addEventListener('click', function () {
+        deleteCategoryNode(category.id);
+      });
+      row.appendChild(deleteBtn);
+    }
+
+    function renderEditRow() {
+      row.innerHTML = '';
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'category-node__rename-input';
+      input.value = category.name;
+      row.appendChild(input);
+
+      var saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-primary category-node__action';
+      saveBtn.textContent = '儲存';
+      row.appendChild(saveBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn category-node__action';
+      cancelBtn.textContent = '取消';
+      cancelBtn.addEventListener('click', renderViewRow);
+      row.appendChild(cancelBtn);
+
+      saveBtn.addEventListener('click', function () {
+        var newName = input.value.trim();
+        if (!newName) { showError('分類名稱不能是空的'); return; }
+
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        saveBtn.textContent = '儲存中…';
+
+        google.script.run
+          .withSuccessHandler(function (updated) {
+            category.name = updated.name;
+            renderViewRow();
+            showToast('已更新');
+          })
+          .withFailureHandler(function (err) {
+            saveBtn.disabled = false;
+            cancelBtn.disabled = false;
+            saveBtn.textContent = '儲存';
+            showError(err.message);
+          })
+          .updateCategory(category.id, newName);
+      });
+
+      input.focus();
+    }
+
+    renderViewRow();
+
+    if (isTopLevel) {
+      var childrenContainer = document.createElement('div');
+      childrenContainer.className = 'category-node__children';
+      cachedCategoriesForManager
+        .filter(function (c) { return c.parent_id === category.id; })
+        .forEach(function (child) {
+          childrenContainer.appendChild(buildCategoryNode(child, false));
+        });
+      node.appendChild(childrenContainer);
+    }
+
+    return node;
+  }
+
+  function toggleAddChildForm(node, parentCategory) {
+    var existing = node.querySelector('.category-node__add-child-form');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    var form = document.createElement('div');
+    form.className = 'category-node__add-child-form';
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = '子分類名稱';
+    form.appendChild(input);
+
+    var confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn btn-primary category-node__action';
+    confirmBtn.textContent = '新增';
+    confirmBtn.addEventListener('click', function () {
+      var name = input.value.trim();
+      if (!name) { showError('請輸入子分類名稱'); return; }
+
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = '新增中…';
+
+      google.script.run
+        .withSuccessHandler(function () {
+          loadCategoryTree();
+          showToast('已新增子分類');
+        })
+        .withFailureHandler(function (err) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = '新增';
+          // 對子分類再建子分類的後端錯誤(「分類最多只能有 2 層」)也是走這裡顯示,
+          // 即使介面已經不讓使用者從正常路徑觸發這個情境。
+          showError(err.message);
+        })
+        .createCategory(name, parentCategory.id);
+    });
+    form.appendChild(confirmBtn);
+
+    var row = node.querySelector('.category-node__row');
+    row.insertAdjacentElement('afterend', form);
+    input.focus();
+  }
+
+  function deleteCategoryNode(categoryId) {
+    google.script.run
+      .withSuccessHandler(function () {
+        // 重新整份 listCategories 拿最新狀態——刪掉的父層底下的子分類,
+        // 依 schema.sql 的 on delete set null 會變成新的頂層分類,
+        // 重新抓資料就會自然反映出來,不用手動搬動 DOM。
+        loadCategoryTree();
+        showToast('已刪除');
+      })
+      .withFailureHandler(function (err) { showError(err.message); })
+      .deleteCategory(categoryId);
+  }
+
+  document.getElementById('btn-add-top-category').addEventListener('click', function () {
+    var input = document.getElementById('new-top-category-name');
+    var name = input.value.trim();
+    if (!name) { showError('請輸入分類名稱'); return; }
+
+    var btn = document.getElementById('btn-add-top-category');
+    btn.disabled = true;
+    btn.textContent = '新增中…';
+
+    google.script.run
+      .withSuccessHandler(function () {
+        btn.disabled = false;
+        btn.textContent = '新增';
+        input.value = '';
+        loadCategoryTree();
+        showToast('已新增分類');
+      })
+      .withFailureHandler(function (err) {
+        btn.disabled = false;
+        btn.textContent = '新增';
+        showError(err.message);
+      })
+      .createCategory(name, null);
+  });
+
+  // 進入頁面時自動載入文章列表,不需要使用者先做任何操作。
+  loadArticleList();
+  loadCategoryFilterOptions();
+  initEasyMDE();
+</script>
+
+</body>
+</html>

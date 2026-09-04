@@ -1,0 +1,43 @@
+<section id="view-article-editor" class="view hidden">
+  <div class="editor-heading-row">
+    <h2 id="editor-heading">新增文章</h2>
+    <span id="editor-seal" class="seal hidden"></span>
+  </div>
+
+  <div class="field">
+    <label for="editor-title">標題</label>
+    <input type="text" id="editor-title" placeholder="文章標題">
+  </div>
+
+  <div class="field">
+    <label for="editor-content">內容</label>
+    <textarea id="editor-content"></textarea>
+  </div>
+
+  <div class="field">
+    <label for="editor-category">分類</label>
+    <select id="editor-category">
+      <option value="">未分類</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label id="editor-tag-label">標籤</label>
+    <div id="editor-tag-picker-container" aria-labelledby="editor-tag-label"></div>
+  </div>
+
+  <div class="editor-actions">
+    <button id="btn-save-draft" class="btn">存草稿</button>
+    <button id="btn-publish" class="btn btn-primary">發布</button>
+  </div>
+
+  <!-- 附件區塊(G3):存成草稿、拿到文章 id 之前先隱藏——沒有 id 就沒地方可以
+       掛附件記錄。存檔成功後這個區塊會顯示出來,不用再跳到詳情頁才能附加。 -->
+  <div id="editor-attachment-section" class="hidden">
+    <hr class="divider">
+    <h3>附件</h3>
+    <p id="editor-attachment-hint" class="editor-attachment-hint"></p>
+    <div id="editor-attachment-panel"></div>
+    <button id="btn-editor-done" class="btn">完成,回列表</button>
+  </div>
+</section>

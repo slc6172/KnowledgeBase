@@ -1,0 +1,15 @@
+# 依賴套件——用 package-lock.json 重建,不進版控
+node_modules/
+
+# clasp 本地部署設定——含實際的 Apps Script 專案 scriptId,每個人各自的部署
+# 目標不同,不該共用/進版控。.clasp.json.example 是範本,留著。
+.clasp.json
+
+# 編輯器/作業系統雜項
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# 測試/覆蓋率輸出
+coverage/

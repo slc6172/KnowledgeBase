@@ -1,0 +1,42 @@
+<section id="view-article-list" class="view">
+  <div class="search-bar">
+    <input type="search" id="search-input" placeholder="搜尋文章…">
+    <select id="list-status-filter">
+      <option value="published" selected>已發布</option>
+      <option value="draft">草稿</option>
+      <option value="all">全部</option>
+    </select>
+    <select id="list-category-filter">
+      <option value="">全部分類</option>
+    </select>
+    <div id="list-tag-filter-container"></div>
+    <button id="btn-search" class="btn btn-primary">搜尋</button>
+    <button id="btn-select-mode" class="btn" type="button">選取</button>
+  </div>
+
+  <div id="article-batch-toolbar" class="batch-toolbar hidden">
+    <span id="batch-toolbar-count" class="batch-toolbar__count"></span>
+
+    <button id="btn-batch-delete" class="btn btn-danger" type="button">刪除</button>
+
+    <span class="batch-toolbar__group">
+      <select id="batch-category-select"><option value="">未分類</option></select>
+      <button id="btn-batch-set-category" class="btn" type="button">設分類</button>
+    </span>
+
+    <span class="batch-toolbar__group batch-toolbar__group--tags">
+      <div id="batch-tag-picker-container"></div>
+      <button id="btn-batch-add-tags" class="btn" type="button">加標籤</button>
+    </span>
+  </div>
+
+  <div id="ai-answer-panel" class="ai-answer hidden"></div>
+
+  <div id="article-list-results"></div>
+
+  <div id="article-list-pager" class="pager hidden">
+    <button id="article-list-pager-prev" class="btn" type="button">上一頁</button>
+    <span id="article-list-pager-label" class="pager__label">第 1 頁</span>
+    <button id="article-list-pager-next" class="btn" type="button">下一頁</button>
+  </div>
+</section>
