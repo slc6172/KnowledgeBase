@@ -16,17 +16,20 @@
     --color-bg: #F6F4F0;
     --color-surface: #FFFFFF;
     --color-ink: #2A2926;
-    --color-ink-muted: #6B6862;
-    --color-primary: #3D5C4E;
-    --color-primary-hover: #33503F;
-    --color-primary-soft: #E4EBE7;
-    --color-accent: #B08B4F;
-    --color-accent-soft: #F3EADA;
-    --color-accent-ink: #6B4E22;
-    --color-border: #E4E0D8;
+    --color-ink-muted: #7A766E;
+    --color-primary: #4F6F60;
+    --color-primary-hover: #435F52;
+    --color-primary-soft: #E8EEEA;
+    --color-accent: #BFA06A;
+    --color-accent-soft: #F5EEE0;
+    --color-accent-ink: #74582D;
+    --color-border: #EAE6DD;
     --color-draft: #9C9890;
     --color-danger: #A3402F;
     --color-danger-soft: #F6E7E3;
+    --color-on-primary: #FFFFFF;
+    --color-on-accent: #FFFFFF;
+    --color-on-danger: #FFFFFF;
     --font-display: 'Noto Serif TC', serif;
     --font-body: 'Noto Sans TC', 'Helvetica Neue', sans-serif;
     --font-mono: 'Noto Sans Mono', ui-monospace, 'SFMono-Regular', monospace;
@@ -91,6 +94,88 @@
     gap: 0.6rem;
   }
 
+  /* 漢堡選單觸發按鈕——桌面版型預設隱藏,只在 <768px 的窄螢幕媒體查詢裡顯示 */
+  .topbar__nav-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+  .topbar__nav-toggle svg { width: 1.5rem; height: 1.5rem; }
+
+  /* 導覽抽屜(窄螢幕漢堡選單展開後的內容,由左側滑入) */
+  .drawer-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(42, 41, 38, 0.45);
+    z-index: 150;
+  }
+
+  .nav-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(80vw, 300px);
+    background: var(--color-surface);
+    box-shadow: 4px 0 24px rgba(42, 41, 38, 0.18);
+    z-index: 151;
+    display: flex;
+    flex-direction: column;
+    padding: 1.5rem 0;
+    overflow-y: auto;
+  }
+
+  .nav-drawer__item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.9rem 1.5rem;
+    border: none;
+    background: none;
+    font: inherit;
+    font-size: 1rem;
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+  .nav-drawer__item:hover,
+  .nav-drawer__item:active { background: var(--color-primary-soft); }
+
+  /* ===== 響應式斷點慣例:桌面 >=768px 維持以上版型;<768px 為窄螢幕版型 ===== */
+  @media (max-width: 767px) {
+    .topbar__nav { display: none; }
+    .topbar__nav-toggle { display: flex; }
+
+    .filter-panel {
+      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 151;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 70vh;
+      overflow-y: auto;
+      padding: 1.25rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
+      background: var(--color-surface);
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      box-shadow: 0 -8px 24px rgba(42, 41, 38, 0.18);
+    }
+    .filter-panel.is-open { display: flex; }
+    .filter-trigger { display: inline-flex; }
+
+    .attachment-preview__frame { height: 60vh; }
+
+    .category-node__row { flex-wrap: wrap; }
+  }
+
   /* 主內容區 */
   .content {
     max-width: var(--content-width);
@@ -134,10 +219,17 @@
   .btn-primary {
     background: var(--color-primary);
     border-color: var(--color-primary);
-    color: #FFFFFF;
+    color: var(--color-on-primary);
   }
 
   .btn-primary:hover { background: var(--color-primary-hover); }
+
+  .btn-tinted {
+    background: var(--color-primary-soft);
+    border-color: var(--color-primary-soft);
+    color: var(--color-primary);
+  }
+  .btn-tinted:hover { border-color: var(--color-primary); }
 
   /* 表單元件 */
   input[type="text"],
@@ -194,14 +286,14 @@
     border: 2px solid var(--color-draft);
   }
 
-  /* 標籤 */
+  /* 標籤——中性灰階,靠文字本身辨識 */
   .tag {
     display: inline-block;
     font-size: 0.75rem;
     padding: 2px 10px;
     border-radius: 999px;
-    background: var(--color-accent-soft);
-    color: var(--color-accent-ink);
+    background: var(--color-border);
+    color: var(--color-ink-muted);
     margin-right: 4px;
   }
 
@@ -247,6 +339,10 @@
     margin-bottom: 1.5rem;
   }
   .search-bar input { flex: 1; }
+
+  .filter-panel { display: contents; }
+  .filter-trigger { display: none; align-items: center; gap: 0.35rem; }
+  .filter-trigger svg { width: 1.05rem; height: 1.05rem; }
 
   /* 訊息 toast */
   .toast {
@@ -541,22 +637,46 @@
       <button id="btn-new-article" class="btn btn-primary">新增文章</button>
       <button id="btn-category-manager" class="btn">分類管理</button>
     </nav>
+    <button id="btn-nav-toggle" class="topbar__nav-toggle" type="button" aria-label="開啟選單" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>
+    </button>
   </header>
+
+  <div id="nav-drawer-overlay" class="drawer-overlay hidden"></div>
+  <nav id="nav-drawer" class="nav-drawer hidden" aria-hidden="true">
+    <button id="btn-drawer-article-list" class="nav-drawer__item" type="button">文章列表</button>
+    <button id="btn-drawer-new-article" class="nav-drawer__item" type="button">新增文章</button>
+    <button id="btn-drawer-category-manager" class="nav-drawer__item" type="button">分類管理</button>
+  </nav>
 
   <main class="content">
     <section id="view-article-list" class="view">
   <div class="search-bar">
     <input type="search" id="search-input" placeholder="搜尋文章…">
-    <select id="list-status-filter">
-      <option value="published" selected>已發布</option>
-      <option value="draft">草稿</option>
-      <option value="all">全部</option>
-    </select>
-    <select id="list-category-filter">
-      <option value="">全部分類</option>
-    </select>
-    <button id="btn-search" class="btn btn-primary">搜尋</button>
+    <div id="filter-panel" class="filter-panel">
+      <select id="list-status-filter">
+        <option value="published" selected>已發布</option>
+        <option value="draft">草稿</option>
+        <option value="all">全部</option>
+      </select>
+      <select id="list-category-filter">
+        <option value="">全部分類</option>
+      </select>
+    </div>
+    <button id="btn-search" class="btn btn-tinted">搜尋</button>
+    <button id="btn-open-filter-panel" class="btn filter-trigger" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polygon points="3 4 21 4 14 12 14 19 10 21 10 12 3 4"></polygon>
+      </svg>
+      篩選
+    </button>
   </div>
+
+  <div id="filter-panel-overlay" class="drawer-overlay hidden"></div>
 
   <div id="article-list-results"></div>
 </section>
@@ -629,7 +749,7 @@
 
   <div class="category-new-top">
     <input type="text" id="new-top-category-name" placeholder="新增頂層分類名稱">
-    <button id="btn-add-top-category" class="btn btn-primary">新增</button>
+    <button id="btn-add-top-category" class="btn btn-tinted">新增</button>
   </div>
 
   <div id="category-tree"></div>
@@ -736,6 +856,39 @@
   });
 
   document.getElementById('btn-category-manager').addEventListener('click', function () {
+    showView('category-manager');
+    loadCategoryTree();
+  });
+
+  function openNavDrawer() {
+    document.getElementById('nav-drawer').classList.remove('hidden');
+    document.getElementById('nav-drawer-overlay').classList.remove('hidden');
+    document.getElementById('btn-nav-toggle').setAttribute('aria-expanded', 'true');
+  }
+
+  function closeNavDrawer() {
+    document.getElementById('nav-drawer').classList.add('hidden');
+    document.getElementById('nav-drawer-overlay').classList.add('hidden');
+    document.getElementById('btn-nav-toggle').setAttribute('aria-expanded', 'false');
+  }
+
+  document.getElementById('btn-nav-toggle').addEventListener('click', openNavDrawer);
+  document.getElementById('nav-drawer-overlay').addEventListener('click', closeNavDrawer);
+
+  document.getElementById('btn-drawer-article-list').addEventListener('click', function () {
+    closeNavDrawer();
+    goHome();
+  });
+
+  document.getElementById('btn-drawer-new-article').addEventListener('click', function () {
+    closeNavDrawer();
+    resetEditorForm();
+    enterEditor();
+    showView('article-editor');
+  });
+
+  document.getElementById('btn-drawer-category-manager').addEventListener('click', function () {
+    closeNavDrawer();
     showView('category-manager');
     loadCategoryTree();
   });
@@ -928,6 +1081,19 @@
   document.getElementById('list-category-filter').addEventListener('change', function () {
     document.getElementById('btn-search').click();
   });
+
+  function openFilterPanel() {
+    document.getElementById('filter-panel').classList.add('is-open');
+    document.getElementById('filter-panel-overlay').classList.remove('hidden');
+  }
+
+  function closeFilterPanel() {
+    document.getElementById('filter-panel').classList.remove('is-open');
+    document.getElementById('filter-panel-overlay').classList.add('hidden');
+  }
+
+  document.getElementById('btn-open-filter-panel').addEventListener('click', openFilterPanel);
+  document.getElementById('filter-panel-overlay').addEventListener('click', closeFilterPanel);
 
   /**
    * 回首頁——重置搜尋狀態、狀態/分類篩選回預設,重新載入列表。
@@ -1290,7 +1456,13 @@
       element: document.getElementById('editor-content'),
       spellChecker: false,
       status: false,
-      placeholder: '用 Markdown 寫下內容…'
+      placeholder: '用 Markdown 寫下內容…',
+      toolbar: [
+        'bold', 'italic', 'heading', '|',
+        'quote', 'unordered-list', 'ordered-list', '|',
+        'link', 'image', 'code', '|',
+        'preview'
+      ]
     });
   }
 

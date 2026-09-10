@@ -1,6 +1,6 @@
 {
   "name": "gas-supabase-knowledge-base",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "GAS + Supabase 個人/團隊知識庫 — 文章、附件、搜尋的 Apps Script 後端與前端",
   "repository": {
     "type": "git",

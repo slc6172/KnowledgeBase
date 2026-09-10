@@ -73,8 +73,14 @@ function listArticles(opts) {
   if (opts.status) q += '&' + eqFilter_('status', opts.status);
   if (opts.categoryId) q += '&' + eqFilter_('category_id', opts.categoryId);
   if (opts.tagIds && opts.tagIds.length > 0) q += '&' + inFilter_('id', matchedIds);
-  q += '&limit=' + (opts.limit || 50);
-  if (opts.offset) q += '&offset=' + opts.offset;
+  // limit/offset 語意上不是過濾條件，不能套用 eqFilter_，但一樣是呼叫端可控值，
+  // 字串相加組進 URL 有一樣的注入風險（細節見 README 已知問題修復紀錄）。強制
+  // 轉成 Number：轉換失敗（非數字字串、undefined）會得到 NaN，NaN 是 falsy，
+  // 落回預設值/跳過，順便處理了「傳入非數字」這個原本沒管的邊界情況。
+  var limit = Number(opts.limit) || 50;
+  var offset = Number(opts.offset);
+  q += '&limit=' + limit;
+  if (offset) q += '&offset=' + offset;
 
   var rows = supabaseSelect_('articles', q);
   return rows.map(normalizeArticleRow_);

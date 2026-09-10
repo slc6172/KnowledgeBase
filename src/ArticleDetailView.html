@@ -6,11 +6,22 @@
       <span id="detail-updated"></span>
     </div>
     <div class="detail-header__actions">
-      <button id="btn-share-article" class="btn hidden">分享</button>
       <button id="btn-edit-article" class="btn">編輯</button>
-      <button id="btn-delete-article" class="btn btn-danger">刪除文章</button>
+      <button id="btn-detail-more" class="btn more-trigger" type="button" aria-label="更多操作">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="2"></circle>
+          <circle cx="12" cy="12" r="2"></circle>
+          <circle cx="19" cy="12" r="2"></circle>
+        </svg>
+      </button>
+      <div id="detail-more-menu" class="detail-more-menu">
+        <button id="btn-share-article" class="btn hidden">分享</button>
+        <button id="btn-delete-article" class="btn btn-danger">刪除文章</button>
+      </div>
     </div>
   </div>
+
+  <div id="detail-more-menu-overlay" class="drawer-overlay hidden"></div>
 
   <h2 id="detail-title"></h2>
   <div id="detail-tags" class="detail-tags"></div>

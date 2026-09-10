@@ -3,17 +3,20 @@
     --color-bg: #F6F4F0;
     --color-surface: #FFFFFF;
     --color-ink: #2A2926;
-    --color-ink-muted: #6B6862;
-    --color-primary: #3D5C4E;
-    --color-primary-hover: #33503F;
-    --color-primary-soft: #E4EBE7;
-    --color-accent: #B08B4F;
-    --color-accent-soft: #F3EADA;
-    --color-accent-ink: #6B4E22;
-    --color-border: #E4E0D8;
+    --color-ink-muted: #7A766E;
+    --color-primary: #4F6F60;
+    --color-primary-hover: #435F52;
+    --color-primary-soft: #E8EEEA;
+    --color-accent: #BFA06A;
+    --color-accent-soft: #F5EEE0;
+    --color-accent-ink: #74582D;
+    --color-border: #EAE6DD;
     --color-draft: #9C9890;
     --color-danger: #A3402F;
     --color-danger-soft: #F6E7E3;
+    --color-on-primary: #FFFFFF;
+    --color-on-accent: #FFFFFF;
+    --color-on-danger: #FFFFFF;
     --font-display: 'Noto Serif TC', serif;
     --font-body: 'Noto Sans TC', 'Helvetica Neue', sans-serif;
     --font-mono: 'Noto Sans Mono', ui-monospace, 'SFMono-Regular', monospace;
@@ -78,6 +81,131 @@
     gap: 0.6rem;
   }
 
+  /* 漢堡選單觸發按鈕——桌面版型預設隱藏,只在 <768px 的窄螢幕媒體查詢裡顯示 */
+  .topbar__nav-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+  .topbar__nav-toggle svg { width: 1.5rem; height: 1.5rem; }
+
+  /* 導覽抽屜(窄螢幕漢堡選單展開後的內容,由左側滑入) */
+  .drawer-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(42, 41, 38, 0.45);
+    z-index: 150;
+  }
+
+  .nav-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(80vw, 300px);
+    background: var(--color-surface);
+    box-shadow: 4px 0 24px rgba(42, 41, 38, 0.18);
+    z-index: 151;
+    display: flex;
+    flex-direction: column;
+    padding: 1.5rem 0;
+    overflow-y: auto;
+  }
+
+  .nav-drawer__item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.9rem 1.5rem;
+    border: none;
+    background: none;
+    font: inherit;
+    font-size: 1rem;
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+  .nav-drawer__item:hover,
+  .nav-drawer__item:active { background: var(--color-primary-soft); }
+
+  /* ===== 響應式斷點慣例:桌面 >=768px 維持以上版型;<768px 為窄螢幕版型 =====
+     後續票(文章列表篩選面板/批次工具列、文章詳情更多選單、編輯器表單堆疊、
+     分類標籤管理列堆疊)一律沿用同一個 767px 斷點,不重新定義。 */
+  @media (max-width: 767px) {
+    .topbar__nav { display: none; }
+    .topbar__nav-toggle { display: flex; }
+
+    /* 篩選面板:窄螢幕下改成由畫面底部滑入的面板,預設收起,開啟時加上
+       .is-open。狀態/分類/標籤篩選欄位本身的行為不變,只是換了容器。 */
+    .filter-panel {
+      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 151;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 70vh;
+      overflow-y: auto;
+      padding: 1.25rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
+      background: var(--color-surface);
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      box-shadow: 0 -8px 24px rgba(42, 41, 38, 0.18);
+    }
+    .filter-panel.is-open { display: flex; }
+
+    .filter-trigger { display: inline-flex; }
+    #btn-open-filter-panel { display: inline-flex; }
+
+    /* 批次操作工具列:窄螢幕下貼在畫面最下方,方便單手操作 */
+    .batch-toolbar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 140;
+      margin: 0;
+      border-radius: 0;
+      box-shadow: 0 -6px 20px rgba(42, 41, 38, 0.15);
+    }
+
+    /* 文章詳情頁「更多」選單:分享/刪除收進由下滑入的面板,重用跟篩選面板
+       同一套模式;「編輯」不在這裡,維持常駐顯示。 */
+    .detail-more-menu {
+      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 151;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 1.25rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
+      background: var(--color-surface);
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+      box-shadow: 0 -8px 24px rgba(42, 41, 38, 0.18);
+    }
+    .detail-more-menu.is-open { display: flex; }
+    .more-trigger { display: inline-flex; }
+    #btn-detail-more { display: inline-flex; }
+
+    /* 附件線上預覽:固定 520px 高度在窄螢幕上比例失衡,改用相對視窗高度的
+       單位,桌面版型(見上方 .attachment-preview__frame 基礎規則)不受影響 */
+    .attachment-preview__frame { height: 60vh; }
+
+    /* 分類/標籤管理節點列:允許換行堆疊,不做額外收合選單或觸控優化
+       (Q1 定案:這兩個管理頁是低頻操作,能用、允許直向堆疊即可) */
+    .category-node__row { flex-wrap: wrap; }
+    .tag-node__row { flex-wrap: wrap; }
+  }
+
   /* 主內容區 */
   .content {
     max-width: var(--content-width);
@@ -136,10 +264,19 @@
   .btn-primary {
     background: var(--color-primary);
     border-color: var(--color-primary);
-    color: #FFFFFF;
+    color: var(--color-on-primary);
   }
 
   .btn-primary:hover { background: var(--color-primary-hover); }
+
+  /* 輕量強調按鈕——給頻繁的操作性動作用(搜尋/新增分類/行內確認等),
+     跟 .btn-primary 的實心填滿區隔開,只留給真正關鍵的少數動作 */
+  .btn-tinted {
+    background: var(--color-primary-soft);
+    border-color: var(--color-primary-soft);
+    color: var(--color-primary);
+  }
+  .btn-tinted:hover { border-color: var(--color-primary); }
 
   .btn-danger {
     color: var(--color-danger);
@@ -202,14 +339,14 @@
     border: 2px solid var(--color-draft);
   }
 
-  /* 標籤 */
+  /* 標籤——中性灰階,靠文字本身辨識,不再靠顏色分辨不同標籤 */
   .tag {
     display: inline-block;
     font-size: 0.75rem;
     padding: 2px 10px;
     border-radius: 999px;
-    background: var(--color-accent-soft);
-    color: var(--color-accent-ink);
+    background: var(--color-border);
+    color: var(--color-ink-muted);
     margin-right: 4px;
   }
 
@@ -283,6 +420,14 @@
   .search-bar .tag-input {
     min-width: 160px;
   }
+
+  /* 篩選面板容器——桌面版型用 display: contents 讓子元素(狀態/分類/標籤
+     篩選)直接變成 .search-bar 的 flex item,版面跟改動前完全一樣;窄螢幕下
+     的樣子在下面 767px 媒體查詢裡覆寫成由下滑入的面板。 */
+  .filter-panel { display: contents; }
+
+  .filter-trigger { display: none; align-items: center; gap: 0.35rem; }
+  .filter-trigger svg { width: 1.05rem; height: 1.05rem; }
 
   /* 批次操作工具列 */
   .batch-toolbar {
@@ -569,6 +714,21 @@
     align-items: center;
     gap: 0.5rem;
   }
+  /* 桌面版型用 flex order 固定「分享/編輯/刪除」的視覺順序,跟改動前一致;
+     這樣窄螢幕版型可以自由把分享/刪除挪進 .detail-more-menu 這個新容器,
+     不影響桌面順序。 */
+  #btn-share-article { order: 1; }
+  #btn-edit-article { order: 2; }
+  #btn-delete-article { order: 3; }
+
+  /* 「更多」選單容器——桌面版型用 display: contents 讓子元素(分享/刪除)
+     直接變成 .detail-header__actions 的 flex item,版面跟改動前完全一樣;
+     窄螢幕下的樣子在下面 767px 媒體查詢裡覆寫,跟 Ticket 02 的篩選面板
+     重用同一套「固定定位面板 + 遮罩」模式。 */
+  .detail-more-menu { display: contents; }
+
+  .more-trigger { display: none; align-items: center; justify-content: center; padding: 0.5rem; }
+  .more-trigger svg { width: 1.3rem; height: 1.3rem; }
   .detail-tags { margin: 0.6rem 0 0; }
 
   .editor-heading-row {

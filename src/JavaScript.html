@@ -123,20 +123,66 @@
     goHome();
   });
 
-  document.getElementById('btn-new-article').addEventListener('click', function () {
+  /**
+   * 抽成具名函式,讓桌面版 topbar 按鈕跟窄螢幕導覽抽屜裡的對應項目共用同一段
+   * 邏輯(Ticket 01),不會有兩份互相可能漂移的重複程式碼。
+   */
+  function handleNewArticleClick_() {
     resetEditorForm();
     enterEditor();
     showView('article-editor');
-  });
+  }
 
-  document.getElementById('btn-category-manager').addEventListener('click', function () {
+  function handleCategoryManagerClick_() {
     showView('category-manager');
     loadCategoryTree();
-  });
+  }
 
-  document.getElementById('btn-tag-manager').addEventListener('click', function () {
+  function handleTagManagerClick_() {
     showView('tag-manager');
     loadTagManagerList();
+  }
+
+  document.getElementById('btn-new-article').addEventListener('click', handleNewArticleClick_);
+  document.getElementById('btn-category-manager').addEventListener('click', handleCategoryManagerClick_);
+  document.getElementById('btn-tag-manager').addEventListener('click', handleTagManagerClick_);
+
+  /**
+   * 手機導覽抽屜(Ticket 01)。桌面版型(>=768px)看不到觸發按鈕,不會被誤用。
+   */
+  function openNavDrawer() {
+    document.getElementById('nav-drawer').classList.remove('hidden');
+    document.getElementById('nav-drawer-overlay').classList.remove('hidden');
+    document.getElementById('btn-nav-toggle').setAttribute('aria-expanded', 'true');
+  }
+
+  function closeNavDrawer() {
+    document.getElementById('nav-drawer').classList.add('hidden');
+    document.getElementById('nav-drawer-overlay').classList.add('hidden');
+    document.getElementById('btn-nav-toggle').setAttribute('aria-expanded', 'false');
+  }
+
+  document.getElementById('btn-nav-toggle').addEventListener('click', openNavDrawer);
+  document.getElementById('nav-drawer-overlay').addEventListener('click', closeNavDrawer);
+
+  document.getElementById('btn-drawer-article-list').addEventListener('click', function () {
+    closeNavDrawer();
+    goHome();
+  });
+
+  document.getElementById('btn-drawer-new-article').addEventListener('click', function () {
+    closeNavDrawer();
+    handleNewArticleClick_();
+  });
+
+  document.getElementById('btn-drawer-category-manager').addEventListener('click', function () {
+    closeNavDrawer();
+    handleCategoryManagerClick_();
+  });
+
+  document.getElementById('btn-drawer-tag-manager').addEventListener('click', function () {
+    closeNavDrawer();
+    handleTagManagerClick_();
   });
 
   /**
@@ -527,6 +573,24 @@
     document.getElementById('btn-search').click();
   });
 
+  /**
+   * 窄螢幕篩選面板(Ticket 02)。桌面版型看不到觸發按鈕,不會被誤用。跟
+   * Ticket 01 的導覽抽屜是同一種「由固定定位面板 + 遮罩」的模式,但這裡是
+   * 由下往上滑入,不是由左側滑入。
+   */
+  function openFilterPanel() {
+    document.getElementById('filter-panel').classList.add('is-open');
+    document.getElementById('filter-panel-overlay').classList.remove('hidden');
+  }
+
+  function closeFilterPanel() {
+    document.getElementById('filter-panel').classList.remove('is-open');
+    document.getElementById('filter-panel-overlay').classList.add('hidden');
+  }
+
+  document.getElementById('btn-open-filter-panel').addEventListener('click', openFilterPanel);
+  document.getElementById('filter-panel-overlay').addEventListener('click', closeFilterPanel);
+
   document.getElementById('article-list-pager-prev').addEventListener('click', function () {
     if (currentListPage === 0) return;
     currentListPage -= 1;
@@ -825,6 +889,7 @@
   }
 
   document.getElementById('btn-share-article').addEventListener('click', function () {
+    closeDetailMoreMenu();
     if (!currentDetailArticleId) return;
     var articleId = currentDetailArticleId;
     google.script.run
@@ -844,7 +909,26 @@
     if (currentDetailArticleId) openArticleEditor(currentDetailArticleId);
   });
 
+  /**
+   * 文章詳情頁「更多」選單(Ticket 03)。桌面版型看不到觸發按鈕,不會被
+   * 誤用。跟 Ticket 02 的篩選面板是同一種「由固定定位面板 + 遮罩」模式,
+   * 內容換成分享/刪除兩個項目。
+   */
+  function openDetailMoreMenu() {
+    document.getElementById('detail-more-menu').classList.add('is-open');
+    document.getElementById('detail-more-menu-overlay').classList.remove('hidden');
+  }
+
+  function closeDetailMoreMenu() {
+    document.getElementById('detail-more-menu').classList.remove('is-open');
+    document.getElementById('detail-more-menu-overlay').classList.add('hidden');
+  }
+
+  document.getElementById('btn-detail-more').addEventListener('click', openDetailMoreMenu);
+  document.getElementById('detail-more-menu-overlay').addEventListener('click', closeDetailMoreMenu);
+
   document.getElementById('btn-delete-article').addEventListener('click', function () {
+    closeDetailMoreMenu();
     if (!currentDetailArticleId) return;
     // 硬刪除、沒有資源回收筒(對應先前決策),用原生 confirm() 擋一下——
     // 這是目前唯一「整篇文章 + 全部附件一次消失」的操作,比刪單一附件/分類
@@ -1394,11 +1478,21 @@
 
   function initEasyMDE() {
     if (easyMDEInstance) return;
+    // 精簡工具列(Ticket 04):桌面/手機共用同一份設定,不依斷點動態切換、
+    // 不需要在斷點切換時重建編輯器實例。拿掉雙欄預覽(side-by-side)、
+    // 全螢幕(fullscreen)、使用說明(guide)——單人知識庫用不太到,窄螢幕下
+    // 這幾顆按鈕只會多佔垂直空間、把輸入區域往下擠壓。
     easyMDEInstance = new EasyMDE({
       element: document.getElementById('editor-content'),
       spellChecker: false,
       status: false,
-      placeholder: '用 Markdown 寫下內容…'
+      placeholder: '用 Markdown 寫下內容…',
+      toolbar: [
+        'bold', 'italic', 'heading', '|',
+        'quote', 'unordered-list', 'ordered-list', '|',
+        'link', 'image', 'code', '|',
+        'preview'
+      ]
     });
   }
 
@@ -1963,7 +2057,7 @@
       row.appendChild(input);
 
       var saveBtn = document.createElement('button');
-      saveBtn.className = 'btn btn-primary category-node__action';
+      saveBtn.className = 'btn btn-tinted category-node__action';
       saveBtn.textContent = '儲存';
       row.appendChild(saveBtn);
 
@@ -2037,7 +2131,7 @@
       row.appendChild(select);
 
       var confirmBtn = document.createElement('button');
-      confirmBtn.className = 'btn btn-primary category-node__action';
+      confirmBtn.className = 'btn btn-tinted category-node__action';
       confirmBtn.textContent = '確定';
       row.appendChild(confirmBtn);
 
@@ -2102,7 +2196,7 @@
     form.appendChild(input);
 
     var confirmBtn = document.createElement('button');
-    confirmBtn.className = 'btn btn-primary category-node__action';
+    confirmBtn.className = 'btn btn-tinted category-node__action';
     confirmBtn.textContent = '新增';
     confirmBtn.addEventListener('click', function () {
       var name = input.value.trim();
@@ -2259,7 +2353,7 @@
       row.appendChild(input);
 
       var saveBtn = document.createElement('button');
-      saveBtn.className = 'btn btn-primary tag-node__action';
+      saveBtn.className = 'btn btn-tinted tag-node__action';
       saveBtn.textContent = '儲存';
       row.appendChild(saveBtn);
 
@@ -2318,7 +2412,7 @@
       row.appendChild(select);
 
       var confirmBtn = document.createElement('button');
-      confirmBtn.className = 'btn btn-primary tag-node__action';
+      confirmBtn.className = 'btn btn-tinted tag-node__action';
       confirmBtn.textContent = '合併';
       row.appendChild(confirmBtn);
 

@@ -22,7 +22,22 @@
       <button id="btn-category-manager" class="btn">分類管理</button>
       <button id="btn-tag-manager" class="btn">標籤管理</button>
     </nav>
+    <button id="btn-nav-toggle" class="topbar__nav-toggle" type="button" aria-label="開啟選單" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>
+    </button>
   </header>
+
+  <div id="nav-drawer-overlay" class="drawer-overlay hidden"></div>
+  <nav id="nav-drawer" class="nav-drawer hidden" aria-hidden="true">
+    <button id="btn-drawer-article-list" class="nav-drawer__item" type="button">文章列表</button>
+    <button id="btn-drawer-new-article" class="nav-drawer__item" type="button">新增文章</button>
+    <button id="btn-drawer-category-manager" class="nav-drawer__item" type="button">分類管理</button>
+    <button id="btn-drawer-tag-manager" class="nav-drawer__item" type="button">標籤管理</button>
+  </nav>
 
   <main class="content">
     <?!= include('ArticleListView'); ?>

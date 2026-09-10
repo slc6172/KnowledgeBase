@@ -1,18 +1,30 @@
 <section id="view-article-list" class="view">
   <div class="search-bar">
     <input type="search" id="search-input" placeholder="搜尋文章…">
-    <select id="list-status-filter">
-      <option value="published" selected>已發布</option>
-      <option value="draft">草稿</option>
-      <option value="all">全部</option>
-    </select>
-    <select id="list-category-filter">
-      <option value="">全部分類</option>
-    </select>
-    <div id="list-tag-filter-container"></div>
-    <button id="btn-search" class="btn btn-primary">搜尋</button>
+
+    <div id="filter-panel" class="filter-panel">
+      <select id="list-status-filter">
+        <option value="published" selected>已發布</option>
+        <option value="draft">草稿</option>
+        <option value="all">全部</option>
+      </select>
+      <select id="list-category-filter">
+        <option value="">全部分類</option>
+      </select>
+      <div id="list-tag-filter-container"></div>
+    </div>
+
+    <button id="btn-search" class="btn btn-tinted">搜尋</button>
+    <button id="btn-open-filter-panel" class="btn filter-trigger" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polygon points="3 4 21 4 14 12 14 19 10 21 10 12 3 4"></polygon>
+      </svg>
+      篩選
+    </button>
     <button id="btn-select-mode" class="btn" type="button">選取</button>
   </div>
+
+  <div id="filter-panel-overlay" class="drawer-overlay hidden"></div>
 
   <div id="article-batch-toolbar" class="batch-toolbar hidden">
     <span id="batch-toolbar-count" class="batch-toolbar__count"></span>

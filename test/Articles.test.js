@@ -295,6 +295,21 @@ describe("listArticles", () => {
     );
   });
 
+  test("rejects a non-numeric limit/offset instead of concatenating it raw into the query string", () => {
+    // limit/offset 語意上不是「過濾條件」，之前沒有跟著 eqFilter_/inFilter_ 一起
+    // 做防護，複掃時發現同樣是呼叫端可控值、字串相加組進 URL——而且 listArticles
+    // 是公開讀取函式，不需要密碼就能呼叫，風險比原本 ticket 04 抓到的欄位更高
+    // （細節見 README 已知問題修復紀錄）。非數字一律當成沒有提供，落回預設值。
+    global.httpFetch_ = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+
+    listArticles({ limit: "1&select=*,secret_column", offset: "1&malicious=x" });
+
+    const calledUrl = global.httpFetch_.mock.calls[0][0];
+    expect(calledUrl).not.toMatch(/select=\*,secret_column|malicious/);
+    expect(calledUrl).toContain("&limit=50");
+    expect(calledUrl).not.toContain("&offset=");
+  });
+
   test("filters by tagIds: queries article_tags first, then articles with id=in.(...) of AND-matching ids", () => {
     const fetchSpy = jest
       .fn()
