@@ -42,6 +42,16 @@ function trimProp_(value) {
  * 密碼就能觸發的公開端點。要手動執行的話,暫時把底線拿掉存檔、在編輯器選這個
  * 函式執行、看完「執行紀錄」的輸出後再把底線加回來存檔。
  */
+/**
+ * 密碼強度建議下限——只是給 debugConfig_ 印警告用的參考值,不是硬性擋下
+ * 過短密碼的門檻(mycr F-05 修正:這裡刻意選擇「診斷時提醒」而不是「執行期
+ * 強制擋下」,因為 getWritePassword_ 在每次寫入請求都會被呼叫,如果在那裡
+ * 加上強制長度檢查,任何已經部署、密碼設得比較短的既有環境,這次更新一上線
+ * 就會直接把擁有者自己鎖在外面——診斷工具是擁有者自己選擇執行時才會看到,
+ * 不會有這個風險,足以達到「提醒擁有者密碼夠不夠長」這個目的)。
+ */
+var WRITE_PASSWORD_RECOMMENDED_MIN_LENGTH_ = 12;
+
 function debugConfig_() {
   var config = getConfig_();
   function preview(value) {
@@ -53,31 +63,23 @@ function debugConfig_() {
   Logger.log('SUPABASE_URL: ' + config.supabaseUrl);
   Logger.log('SUPABASE_SERVICE_ROLE_KEY: ' + preview(config.serviceRoleKey));
   Logger.log('GEMINI_API_KEY: ' + preview(config.geminiApiKey));
-}
 
-/**
- * 一次性執行:把下面的預留字串換成真正的值後執行一次,把金鑰跟寫入密碼寫進
- * Script Properties。執行完可以把這個函式內容清掉或留著,值不會出現在原始碼
- * 版本以外的地方,也不會傳到瀏覽器。
- * WRITE_PASSWORD 是共用密碼(見 Auth.gs 的 callProtected)——寫入類操作(建立/
- * 編輯/刪除文章、附件、分類)都需要它,讀取類操作不受影響。
- *
- * 函式名稱刻意帶底線字首,原因跟理由都同 debugConfig_ 上面的說明:不會出現在
- * 編輯器的函式下拉選單、也不會被任何頁面載入時就能呼叫。要執行這個一次性設定,
- * 一樣是暫時把底線拿掉存檔、在編輯器選這個函式執行、跑完後把底線加回來存檔——
- * 這樣可以避免它變成任何呼叫端都能觸發的端點(觸發後果是整個 app 連密碼帶
- * 金鑰一起被重設成這裡寫死的預留字串)。
- */
-function setupScriptProperties_() {
-  var props = PropertiesService.getScriptProperties();
-  props.setProperties({
-    SUPABASE_URL: 'https://YOUR_PROJECT_REF.supabase.co',
-    SUPABASE_SERVICE_ROLE_KEY: 'YOUR_SERVICE_ROLE_KEY',
-    GEMINI_API_KEY: 'YOUR_GEMINI_API_KEY',
-    WRITE_PASSWORD: 'YOUR_WRITE_PASSWORD'
-  });
+  // 只印長度跟是否過短的警告,絕對不印密碼本身的任何片段——密碼的熵比 API
+  // 金鑰低,就算只洩漏開頭/結尾幾個字元,對「可能被猜中」的風險影響也比
+  // 金鑰大得多,跟上面 preview() 印一小段的做法刻意不一樣。
+  var writePassword = getWritePassword_();
+  var writePasswordLine = 'WRITE_PASSWORD: 已設定,' + writePassword.length + ' 字元';
+  if (writePassword.length < WRITE_PASSWORD_RECOMMENDED_MIN_LENGTH_) {
+    writePasswordLine +=
+      '(建議至少 ' + WRITE_PASSWORD_RECOMMENDED_MIN_LENGTH_ +
+      ' 字元,太短容易被暴力猜中——鎖定機制不是無限強的保護,密碼本身夠長還是重要的第一道防線)';
+  }
+  Logger.log(writePasswordLine);
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { getConfig_: getConfig_, setupScriptProperties_: setupScriptProperties_ };
+  module.exports = {
+    getConfig_: getConfig_,
+    debugConfig_: debugConfig_
+  };
 }

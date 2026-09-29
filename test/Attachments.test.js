@@ -1,18 +1,88 @@
 const {
   loadCoreGas,
   fakeUtilities,
+  fakeCacheService,
+  fakeLogger,
   fakeResponse
 } = require("./helpers/testSetup");
 const { loadGas } = require("./helpers/loadGas");
 
 beforeEach(() => {
   loadCoreGas();
+  fakeCacheService();
+  loadGas("../../src/Auth.gs");
   loadGas("../../src/StorageClient.gs");
   loadGas("../../src/AttachmentTypes.gs");
   loadGas("../../src/Attachments.gs");
 });
 
 describe("uploadAttachmentFile", () => {
+  test("mycr finding: when the DB insert fails after a successful Storage upload, best-effort deletes the just-uploaded object before rethrowing", () => {
+    fakeUtilities("uuid-orphan");
+    fakeLogger();
+    const base64Data = Buffer.from("hello").toString("base64");
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-orphan.png"}')) // storage upload
+      .mockReturnValueOnce(fakeResponse(409, "insert or update on table \"attachments\" violates foreign key constraint")) // db insert fails
+      .mockReturnValueOnce(fakeResponse(200, "")); // compensating storage delete
+    global.httpFetch_ = fetchSpy;
+
+    let caught;
+    try {
+      uploadAttachmentFile_("stale-article", "cat.png", base64Data, "image/png");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/409/);
+    expect(caught.isUpstreamError_).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://x.supabase.co/storage/v1/object/attachments/stale-article/uuid-orphan.png",
+      expect.objectContaining({ method: "delete" })
+    );
+  });
+
+  test("mycr finding: if the compensating Storage cleanup itself fails, logs it but still rethrows the original insert error (not the cleanup error)", () => {
+    fakeUtilities("uuid-orphan2");
+    const logger = fakeLogger();
+    const base64Data = Buffer.from("hello").toString("base64");
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-orphan2.png"}')) // storage upload
+      .mockReturnValueOnce(fakeResponse(409, "fk violation")) // db insert fails
+      .mockReturnValueOnce(fakeResponse(500, "storage also down")); // compensating delete also fails
+    global.httpFetch_ = fetchSpy;
+
+    let caught;
+    try {
+      uploadAttachmentFile_("stale-article", "cat.png", base64Data, "image/png");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/fk violation/);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(logger.logs.some((l) => /uuid-orphan2\.png/.test(l))).toBe(true);
+  });
+
+  test("rejects a file over the 20MB cap before any network call", () => {
+    fakeUtilities("uuid-oversize");
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+    // 20MB + 1 byte 的假資料,base64 編碼後解出來剛好超過上限一個 byte。
+    const oversized = Buffer.alloc(20 * 1024 * 1024 + 1, "a").toString("base64");
+
+    expect(() =>
+      uploadAttachmentFile_("a1", "big.zip", oversized, "application/zip")
+    ).toThrow(/20\s*MB|過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("decodes base64, uploads to Storage, and inserts the attachments row", () => {
     fakeUtilities("uuid-1");
     const base64Data = Buffer.from("hello").toString("base64"); // 5 bytes
@@ -65,6 +135,59 @@ describe("uploadAttachmentFile", () => {
       })
     );
     expect(attachment.id).toBe("att-1");
+  });
+
+  test("ignores the caller-supplied mimeType and forces octet-stream for svg, even if the caller claims image/svg+xml", () => {
+    // svg 被 detectAttachmentType_ 歸類成 photo,但它本質上是可以帶 <script>
+    // 的 XML 文件——signed URL 被直接在新分頁開啟時,瀏覽器會依 Content-Type
+    // 決定怎麼解析,不能照抄呼叫端宣稱的 mimeType。這裡刻意呼叫端還是宣稱
+    // image/svg+xml,驗證伺服器端不理會這個宣稱、一律送 octet-stream。
+    fakeUtilities("uuid-svg");
+    const base64Data = Buffer.from("<svg onload=alert(1)></svg>").toString("base64");
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-svg.svg"}'))
+      .mockReturnValueOnce(
+        fakeResponse(
+          201,
+          JSON.stringify([{ id: "att-svg", article_id: "a1", type: "photo" }])
+        )
+      );
+    global.httpFetch_ = fetchSpy;
+
+    uploadAttachmentFile_("a1", "logo.svg", base64Data, "image/svg+xml");
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      1,
+      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid-svg.svg",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "application/octet-stream" })
+      })
+    );
+  });
+
+  test("ignores a mismatched caller-supplied mimeType for a known-safe extension (server value always wins)", () => {
+    // 呼叫端就算刻意亂報 mimeType(這裡宣稱 text/html),只要副檔名在安全
+    // 清單裡,伺服器端還是用清單裡的值,不會被呼叫端牽著走。
+    fakeUtilities("uuid-lie");
+    const base64Data = Buffer.from("hello").toString("base64");
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-lie.png"}'))
+      .mockReturnValueOnce(
+        fakeResponse(201, JSON.stringify([{ id: "att-lie", article_id: "a1", type: "photo" }]))
+      );
+    global.httpFetch_ = fetchSpy;
+
+    uploadAttachmentFile_("a1", "cat.png", base64Data, "text/html");
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      1,
+      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid-lie.png",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "image/png" })
+      })
+    );
   });
 
   test("keeps the Storage path pure ASCII (uuid + extension) for Chinese/Unicode filenames", () => {
@@ -264,6 +387,36 @@ describe("addAttachmentUrl", () => {
 });
 
 describe("listAttachments", () => {
+  test("mycr finding: converts an upstream Supabase failure into the generic data-service message", () => {
+    fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValue(fakeResponse(500, 'column "secret_internal_field" does not exist'));
+
+    let caught;
+    try {
+      listAttachments("a1");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務暫時發生問題/);
+    expect(caught.message).not.toMatch(/secret_internal_field/);
+  });
+
+  test("mycr finding: is subject to the shared public-read rate limit (ANYONE_ANONYMOUS deployment)", () => {
+    global.CacheService.getScriptCache().put(
+      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
+      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
+    );
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => listAttachments("a1")).toThrow(/使用量過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("filters by article_id, orders by created_at ascending, and embeds folder info", () => {
     const rows = [
       { id: "att-1", article_id: "a1", type: "photo", attachment_folders: { id: "f1", name: "設計稿" } },
@@ -285,6 +438,36 @@ describe("listAttachments", () => {
 });
 
 describe("listFolders", () => {
+  test("mycr finding: converts an upstream Supabase failure into the generic data-service message", () => {
+    fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValue(fakeResponse(500, 'column "secret_internal_field" does not exist'));
+
+    let caught;
+    try {
+      listFolders("a1");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務暫時發生問題/);
+    expect(caught.message).not.toMatch(/secret_internal_field/);
+  });
+
+  test("mycr finding: is subject to the shared public-read rate limit — was missing from Auth.gs's documented list of public read functions until this scan (ANYONE_ANONYMOUS deployment)", () => {
+    global.CacheService.getScriptCache().put(
+      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
+      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
+    );
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => listFolders("a1")).toThrow(/使用量過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("filters by article_id and orders by name ascending", () => {
     const rows = [
       { id: "f1", article_id: "a1", name: "設計稿" },
@@ -304,6 +487,14 @@ describe("listFolders", () => {
 });
 
 describe("createFolder", () => {
+  test("rejects a missing/whitespace-only name before any network call", () => {
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => createFolder_("a1", "   ")).toThrow(/名稱/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("inserts a new folder scoped to the article", () => {
     const fetchSpy = jest
       .fn()
@@ -324,6 +515,21 @@ describe("createFolder", () => {
 });
 
 describe("renameFolder", () => {
+  test("rejects a missing/whitespace-only name before any network call", () => {
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => renameFolder_("f1", "   ")).toThrow(/名稱/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("mycr finding: throws a clear error (not silently returning undefined) when folderId doesn't exist", () => {
+    const fetchSpy = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => renameFolder_("no-such-id", "設計稿 v2")).toThrow(/找不到資料夾/);
+  });
+
   test("PATCHes the folder's name and returns the updated row", () => {
     const fetchSpy = jest
       .fn()
@@ -343,12 +549,18 @@ describe("renameFolder", () => {
   });
 
   test("URL-encodes a folderId containing PostgREST-reserved characters", () => {
-    const fetchSpy = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(
+        fakeResponse(200, '[{"id":"a&b","article_id":"a1","name":"舊名稱"}]')
+      ) // findFolderOrThrow_
+      .mockReturnValueOnce(fakeResponse(200, "[]")); // PATCH
     global.httpFetch_ = fetchSpy;
 
     renameFolder_("a&b", "名稱");
 
-    expect(fetchSpy).toHaveBeenCalledWith(
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
       "https://x.supabase.co/rest/v1/attachment_folders?id=eq.a%26b",
       expect.objectContaining({ method: "PATCH" })
     );
@@ -434,7 +646,37 @@ describe("deleteAttachment", () => {
 });
 
 describe("getSignedAttachmentUrl", () => {
-  test("looks up a file-backed attachment and returns its signed URL, defaulting expiresIn to 300", () => {
+  test("mycr finding: converts an upstream Supabase failure into the generic data-service message", () => {
+    fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValue(fakeResponse(500, 'column "secret_internal_field" does not exist'));
+
+    let caught;
+    try {
+      getSignedAttachmentUrl("att-1");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務暫時發生問題/);
+    expect(caught.message).not.toMatch(/secret_internal_field/);
+  });
+
+  test("mycr finding: is subject to the shared public-read rate limit (ANYONE_ANONYMOUS deployment)", () => {
+    global.CacheService.getScriptCache().put(
+      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
+      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
+    );
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => getSignedAttachmentUrl("att-1")).toThrow(/使用量過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("looks up a file-backed attachment and returns its signed URL, defaulting expiresIn to the 3600s (1hr) cap", () => {
     const fetchSpy = jest
       .fn()
       .mockReturnValueOnce(
@@ -455,10 +697,57 @@ describe("getSignedAttachmentUrl", () => {
       "https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf",
       expect.objectContaining({
         method: "post",
-        payload: JSON.stringify({ expiresIn: 300 })
+        payload: JSON.stringify({ expiresIn: 3600 })
       })
     );
     expect(url).toBe("https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf?token=x");
+  });
+
+  test("caps a caller-requested expiresInSeconds above 3600 at the 1hr maximum (mycr finding: expiresIn had no server-side ceiling)", () => {
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(
+        fakeResponse(
+          200,
+          JSON.stringify([{ id: "att-1", article_id: "a1", file_path: "a1/f.pdf" }])
+        )
+      )
+      .mockReturnValueOnce(
+        fakeResponse(200, JSON.stringify({ signedURL: "/object/sign/attachments/a1/f.pdf?token=x" }))
+      );
+    global.httpFetch_ = fetchSpy;
+
+    // 呼叫端(繞過前端直接呼叫 google.script.run)要求 10 年效期,伺服器端一律夾到上限。
+    getSignedAttachmentUrl("att-1", 315360000);
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      "https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf",
+      expect.objectContaining({ payload: JSON.stringify({ expiresIn: 3600 }) })
+    );
+  });
+
+  test("honors a caller-provided expiresInSeconds shorter than the cap", () => {
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(
+        fakeResponse(
+          200,
+          JSON.stringify([{ id: "att-1", article_id: "a1", file_path: "a1/f.pdf" }])
+        )
+      )
+      .mockReturnValueOnce(
+        fakeResponse(200, JSON.stringify({ signedURL: "/object/sign/attachments/a1/f.pdf?token=x" }))
+      );
+    global.httpFetch_ = fetchSpy;
+
+    getSignedAttachmentUrl("att-1", 60);
+
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      "https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf",
+      expect.objectContaining({ payload: JSON.stringify({ expiresIn: 60 }) })
+    );
   });
 
   test("throws for a url-type attachment (no file_path) and makes no Storage call", () => {
@@ -484,6 +773,36 @@ describe("getSignedAttachmentUrl", () => {
 });
 
 describe("getTextAttachmentContent", () => {
+  test("mycr finding: converts an upstream Supabase failure into the generic data-service message", () => {
+    fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValue(fakeResponse(500, 'column "secret_internal_field" does not exist'));
+
+    let caught;
+    try {
+      getTextAttachmentContent("att-1");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務暫時發生問題/);
+    expect(caught.message).not.toMatch(/secret_internal_field/);
+  });
+
+  test("mycr finding: is subject to the shared public-read rate limit (ANYONE_ANONYMOUS deployment)", () => {
+    global.CacheService.getScriptCache().put(
+      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
+      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
+    );
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => getTextAttachmentContent("att-1")).toThrow(/使用量過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("returns the downloaded text for a code-type attachment within the size limit", () => {
     const fetchSpy = jest
       .fn()

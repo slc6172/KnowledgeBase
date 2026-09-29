@@ -132,3 +132,21 @@ moveCategory.apply(null, args);`,共用同一組 `getWritePassword_`/密碼比�
 - `moveCategory` 拆成獨立函式而不是擴充 `updateCategory`,是刻意延續專案已有的
   `setArticleStatus`(獨立於 `updateArticle`)這個先例——單一職責的小函式,
   比在一個已經有測試覆蓋的函式上加 optional 參數更不容易破壞既有行為。
+
+- **Implementation Decisions 第 2 點「移到頂層不需要其他檢查」的更正
+  (2026-09)**：這句話原本的理由(「頂層本身不會超過層級限制,也不可能
+  形成循環」)只回答了「為什麼不用做 2 層限制/循環偵測那兩項檢查」,沒有
+  回答「要不要驗證 `categoryId` 本身存在」這件事——這兩者是不同的問題,
+  spec 當初把它們混在一起用同一句「不需要其他檢查」帶過,是規劃階段的
+  疏漏,不是刻意權衡過的決定。`/mycr` 這輪逐行核對程式碼跟這份 spec 時
+  發現:照 spec 原文實作的結果是,`categoryId` 不存在時,`supabaseUpdate`
+  對 PostgREST 送出的 PATCH 會 match 到 0 筆,回傳空陣列,函式最後
+  `return updated[0]` 就是 `undefined`——不是清楚的錯誤,呼叫端(包含
+  `callProtected` 的呼叫者)拿到的是一個沒有意義的空結果。這跟本 spec
+  User Story 5(`newParentId` 找不到時要回傳清楚的「找不到分類」錯誤)其實
+  是同一個精神,只是 User Story 5 只寫到 `newParentId` 那一側,沒有對稱地
+  涵蓋「移到頂層」分支的 `categoryId` 本身。已經修正:這個分支開頭補上
+  `findCategoryOrThrow_(categoryId)`,不存在時一樣拋出「找不到分類: {id}」,
+  跟「移到某個父分類底下」那個分支的第一步驗證對齊。2 層限制/循環偵測那兩項
+  檢查維持原判斷,確實不需要,這部分的原始推理沒有錯。細節與測試見 README
+  已知問題修復紀錄第 59 條。

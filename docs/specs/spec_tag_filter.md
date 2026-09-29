@@ -116,3 +116,19 @@ filter 對多個 `tag_id` 只能表達「至少符合其中一個」(inner join 
 「同時符合全部」的 AND 語意,除非額外疊加同一張關聯表的多次 embed(語法複雜、可讀性差)。
 兩段式查詢雖然多一次網路呼叫,但邏輯清楚、跟 `mergeTags` 已經證明過的「查詢 → 應用層處理 →
 再查」風格一致,對這個專案的資料量級(單一知識庫,文章跟標籤數量都不大)效能不是問題。
+
+- **「符合數量 === tagIds.length」的去重補充(2026-09)**：上面 Implementation
+  Decisions 第 52 行原文寫的是「符合數量 === `tagIds.length`」,而且明確說
+  跟 `hybrid_search_articles` RPC 的 `array_length(tag_ids, 1)` 對齊——兩邊
+  當時是刻意設計成一致的行為,但都沒有考慮「呼叫端傳進來的 `tagIds` 陣列
+  本身有重複值」這個情境。`listArticles`/`searchArticles` 都是免密碼的公開
+  函式,`opts.tagIds` 能直接被 `google.script.run` 繞過前端呼叫(前端的
+  多選元件本身不會產生重複值,但不能假設輸入一定經過前端整理)。重複值會
+  讓門檻比任何文章實際可能符合的相異標籤數還高,真正符合的文章反而被誤判
+  排除。`/mycr` 逐行複查才發現這個落差,不是實作偏離了 spec,是 spec 這裡
+  (跟同樣邏輯的 `hybrid_search_articles` RPC)當時就沒想到這個邊界情況。
+  已修正:`Articles.gs` 的 `filterArticleIdsByTags_` 改用去重後的數量
+  (新增 `uniqueValues_` 輔助函式);`Search.gs` 呼叫 `hybrid_search_articles`
+  RPC 之前,也對 `tag_ids` 做同樣的去重(選在 GAS 這層修,不改
+  `schema.sql` 的 RPC 定義,理由見 `spec_gas_backend.md` 或 README)。細節
+  與測試見 README 已知問題修復紀錄第 58、61 條。

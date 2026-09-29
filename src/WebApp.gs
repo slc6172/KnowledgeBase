@@ -19,7 +19,32 @@ function doGet(e) {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
+/**
+ * 只有 Index.html 的 scriptlet 會呼叫 include(),用固定檔名把頁面組起來——
+ * 但 include 本身沒有底線字首,任何人都能直接對
+ * google.script.run.include(任意檔名) 喊,完全繞過 scriptlet、繞過檔名
+ * 原本「寫死在 Index.html 裡」這層防線。這個知識庫不用登入 Google 就能連線,
+ * 曝光邊界完全交給函式本身,不能假設「反正只有 scriptlet 會呼叫」。目前這
+ * 8 個檔案本來就會透過 Index.html 遞迴組進每個訪客拿到的同一份頁面,所以
+ * 繞過去現在還拿不到任何原本不會給的內容;比照 Auth.gs 白名單的作法先把
+ * 這裡也鎖起來,是為了避免以後專案裡多了不該公開的檔案時,這裡變成一個
+ * 沒有防護的檔案讀取入口。
+ */
+var INCLUDABLE_FILES_ = [
+  'Stylesheet',
+  'JavaScript',
+  'ArticleListView',
+  'ArticleDetailView',
+  'ArticleEditorView',
+  'ArticleNotFoundView',
+  'CategoryManagerView',
+  'TagManagerView'
+];
+
 function include(filename) {
+  if (INCLUDABLE_FILES_.indexOf(filename) === -1) {
+    throw new Error('不支援的檔案: ' + filename);
+  }
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
 
@@ -34,4 +59,13 @@ function include(filename) {
  */
 function getWebAppUrl() {
   return ScriptApp.getService().getUrl();
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = {
+    doGet: doGet,
+    include: include,
+    getWebAppUrl: getWebAppUrl,
+    INCLUDABLE_FILES_: INCLUDABLE_FILES_
+  };
 }

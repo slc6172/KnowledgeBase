@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/highlight.js/latest/highlight.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/highlight.js/latest/styles/atom-one-light.min.css">
   <style>
@@ -816,6 +817,28 @@
 </script>
 <script>
   /**
+   * Markdown 消毒(mycr F-11 修正)——這個檔案是本機開發輔助工具,不是
+   * 部署檔案,餵的一律是開發者自己手動準備的假資料,不會暴露給任何訪客
+   * (見 README「前端測試方式的說明」)。即使風險遠低於正式環境的
+   * JavaScript.html,完全不消毒仍然是個壞示範,補上跟正式環境同一組
+   * 標準設定(見 src/JavaScript.html 的 MD_SANITIZE_CONFIG_ 說明)。這個
+   * 檔案沒有 AI 問答功能,不需要額外擋圖片的那組設定。這裡刻意不去追求
+   * CDN 版本鎖定/SRI 跟正式環境的完全對齊——那是為了防第三方套件被竄改
+   * 這種供應鏈風險,對一個只在本機執行、不對外曝露的開發工具來說,投入
+   * 產出比不高。
+   */
+  var MD_SANITIZE_CONFIG_ = {
+    FORBID_TAGS: [
+      'style', 'form', 'input', 'button', 'textarea', 'select', 'option',
+      'optgroup', 'label', 'fieldset', 'legend'
+    ],
+    FORBID_ATTR: ['style', 'action', 'formaction', 'method', 'srcset']
+  };
+  function renderMarkdownSafe_(md) {
+    return DOMPurify.sanitize(marked.parse(md || ''), MD_SANITIZE_CONFIG_);
+  }
+
+  /**
    * 視圖切換——單頁 SPA 風格,不改變網址、不重新整理頁面(F1 決策)。
    */
   function showView(name) {
@@ -1148,7 +1171,7 @@
       .map(function (t) { return '<span class="tag">' + escapeHtml(t.name) + '</span>'; })
       .join('');
 
-    document.getElementById('detail-content').innerHTML = marked.parse(article.content_md || '');
+    document.getElementById('detail-content').innerHTML = renderMarkdownSafe_(article.content_md);
   }
 
   document.getElementById('btn-edit-article').addEventListener('click', function () {
@@ -1231,7 +1254,7 @@
         if (att.type === 'md_file') {
           var mdDiv = document.createElement('div');
           mdDiv.className = 'detail-content attachment-preview__markdown';
-          mdDiv.innerHTML = marked.parse(content || '');
+          mdDiv.innerHTML = renderMarkdownSafe_(content);
           previewBox.appendChild(mdDiv);
         } else {
           var pre = document.createElement('pre');

@@ -206,3 +206,7 @@ Storage 原始 HTTP 介面細節,因此另外查證了 Supabase 官方 Storage R
   不合併成同一個函式——兩者的 base path(`/storage/v1/` vs `/rest/v1/`)、認證方式
   雖然目前相同但語意不同,分開比較不會日後糾纏不清;共用的只有底層的 `httpFetch_`
   接縫。
+- **更正(見 `spec_attachment_multi_upload.md`)**：上面 Out of Scope 列的「批次上傳」
+  後來還是做了——前端檔案輸入元素改成可多選,依序呼叫這裡定義的
+  `uploadAttachmentFile` 多次,**這個 spec 描述的後端函式本身完全沒有改動**,批次邏輯
+  整個在前端處理,不影響這份 spec 記載的任何後端行為。

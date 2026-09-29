@@ -2,7 +2,10 @@
  * 分類的查詢、建立(含 2 層限制)、改名、刪除。
  */
 function listCategories() {
-  return supabaseSelect_('categories', 'select=*&order=name.asc');
+  return withSafeErrors_('listCategories', function () {
+    checkPublicReadRateLimit_();
+    return supabaseSelect_('categories', 'select=*&order=name.asc');
+  });
 }
 
 function findCategoryOrThrow_(categoryId) {
@@ -14,6 +17,12 @@ function findCategoryOrThrow_(categoryId) {
 }
 
 function createCategory_(name, parentId) {
+  // 跟 articles.title 同一類「空字串滿足 NOT NULL」的洞(細節見 README 已知
+  // 問題修復紀錄)——前端表單已經擋過一次,這裡是後端自己也要正確,不依賴
+  // 前端有沒有做防護。
+  if (!name || String(name).trim() === '') {
+    throw new Error('分類名稱不能是空白');
+  }
   if (parentId) {
     var parent = findCategoryOrThrow_(parentId);
     if (parent.parent_id) {
@@ -25,6 +34,10 @@ function createCategory_(name, parentId) {
 }
 
 function updateCategory_(categoryId, name) {
+  if (!name || String(name).trim() === '') {
+    throw new Error('分類名稱不能是空白');
+  }
+  findCategoryOrThrow_(categoryId);
   var updated = supabaseUpdate_('categories', eqFilter_('id', categoryId), { name: name });
   return updated[0];
 }
@@ -38,6 +51,17 @@ function deleteCategory_(categoryId) {
 
 function moveCategory_(categoryId, newParentId) {
   if (!newParentId) {
+    // 逐行語意校對才第一次發現的落差(2026-09):這個分支原本沒有先驗證
+    // categoryId 存在,跟下面「移到某個父分類底下」那個分支不對稱——那個
+    // 分支一開始就呼叫了 findCategoryOrThrow_(categoryId)。categoryId 不
+    // 存在時,supabaseUpdate_ 對 PostgREST 送出的 PATCH 會 match 到 0 筆,
+    // 回傳空陣列,updated[0] 就是 undefined,不是清楚的錯誤訊息——跟
+    // mergeTags_ 原本那個「目標不存在時靜默回傳 undefined」是同一類問題
+    // (見 README 已知問題修復紀錄第 50 條)。這裡不是要跟 deleteCategory_/
+    // deleteTag_ 刻意不驗證存在性的設計唱反調(那兩個刪除操作,刪不存在的
+    // 東西是無害的空操作);這裡是要「回傳更新後的分類」,目標不存在時就該
+    // 是清楚的錯誤,不是回傳 undefined。
+    findCategoryOrThrow_(categoryId);
     var updated = supabaseUpdate_('categories', eqFilter_('id', categoryId), { parent_id: null });
     return updated[0];
   }

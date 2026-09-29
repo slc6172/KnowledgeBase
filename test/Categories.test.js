@@ -1,12 +1,44 @@
-const { loadCoreGas, fakeResponse } = require("./helpers/testSetup");
+const { loadCoreGas, fakeCacheService, fakeLogger, fakeResponse } = require("./helpers/testSetup");
 const { loadGas } = require("./helpers/loadGas");
 
 beforeEach(() => {
   loadCoreGas();
+  fakeCacheService();
+  loadGas("../../src/Auth.gs");
   loadGas("../../src/Categories.gs");
 });
 
 describe("listCategories", () => {
+  test("mycr finding: converts an upstream Supabase failure into the generic data-service message", () => {
+    fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValue(fakeResponse(500, 'column "secret_internal_field" does not exist'));
+
+    let caught;
+    try {
+      listCategories();
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務暫時發生問題/);
+    expect(caught.message).not.toMatch(/secret_internal_field/);
+  });
+
+  test("mycr finding: is subject to the shared public-read rate limit (ANYONE_ANONYMOUS deployment, protects the Apps Script UrlFetch quota)", () => {
+    global.CacheService.getScriptCache().put(
+      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
+      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
+    );
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => listCategories()).toThrow(/使用量過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("selects all categories ordered by name", () => {
     const rows = [
       { id: "c1", name: "前端", parent_id: null },
@@ -26,6 +58,14 @@ describe("listCategories", () => {
 });
 
 describe("createCategory", () => {
+  test("rejects a missing/whitespace-only name before any network call", () => {
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => createCategory_("   ")).toThrow(/名稱/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("inserts a top-level category when parentId is not given", () => {
     const fetchSpy = jest
       .fn()
@@ -83,6 +123,21 @@ describe("createCategory", () => {
 });
 
 describe("updateCategory", () => {
+  test("rejects a missing/whitespace-only name before any network call", () => {
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => updateCategory_("c1", "   ")).toThrow(/名稱/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("mycr finding: throws a clear error (not silently returning undefined) when categoryId doesn't exist", () => {
+    const fetchSpy = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => updateCategory_("no-such-id", "新名稱")).toThrow(/找不到分類/);
+  });
+
   test("PATCHes only the name", () => {
     const fetchSpy = jest
       .fn()
@@ -105,12 +160,16 @@ describe("updateCategory", () => {
     // categoryId 目前的呼叫端都只會傳資料庫產生的 UUID,但 eqFilter_ 對任何
     // 欄位一律編碼,不假設呼叫端只會傳「看起來安全」的值(縱深防禦,細節見
     // README 已知問題修復紀錄)。
-    const fetchSpy = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a&b","name":"舊名稱"}]')) // findCategoryOrThrow_
+      .mockReturnValueOnce(fakeResponse(200, "[]")); // PATCH
     global.httpFetch_ = fetchSpy;
 
     updateCategory_("a&b", "名稱");
 
-    expect(fetchSpy).toHaveBeenCalledWith(
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
       "https://x.supabase.co/rest/v1/categories?id=eq.a%26b",
       expect.objectContaining({ method: "PATCH" })
     );
@@ -133,16 +192,18 @@ describe("deleteCategory", () => {
 });
 
 describe("moveCategory", () => {
-  test("moving to top level (newParentId=null) PATCHes only parent_id, with no lookups first", () => {
+  test("moving to top level (newParentId=null) confirms categoryId exists, then PATCHes only parent_id", () => {
     const fetchSpy = jest
       .fn()
-      .mockReturnValue(fakeResponse(200, '[{"id":"c2","name":"React","parent_id":null}]'));
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"c2","name":"React","parent_id":"c1"}]')) // findCategoryOrThrow_(categoryId)
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"c2","name":"React","parent_id":null}]')); // PATCH
     global.httpFetch_ = fetchSpy;
 
     const category = moveCategory_("c2", null);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(fetchSpy).toHaveBeenCalledWith(
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
       "https://x.supabase.co/rest/v1/categories?id=eq.c2",
       expect.objectContaining({
         method: "PATCH",
@@ -150,6 +211,15 @@ describe("moveCategory", () => {
       })
     );
     expect(category.parent_id).toBe(null);
+  });
+
+  test("mycr finding: moving to top level throws '找不到分類' (not silently returning undefined) when categoryId doesn't exist", () => {
+    const fetchSpy = jest.fn().mockReturnValueOnce(fakeResponse(200, "[]")); // findCategoryOrThrow_(categoryId) finds nothing
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => moveCategory_("c-missing", null)).toThrow(/找不到分類: c-missing/);
+    // 找不到就直接擋下來,不會多打一次 PATCH。
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   test("throws when categoryId equals newParentId, before any network call", () => {

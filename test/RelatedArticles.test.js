@@ -1,13 +1,45 @@
-const { loadCoreGas, fakeConfig, fakeResponse } = require("./helpers/testSetup");
+const { loadCoreGas, fakeConfig, fakeCacheService, fakeLogger, fakeResponse } = require("./helpers/testSetup");
 const { loadGas } = require("./helpers/loadGas");
 
 beforeEach(() => {
   loadCoreGas();
+  fakeCacheService();
+  loadGas("../../src/Auth.gs");
   loadGas("../../src/Articles.gs");
   loadGas("../../src/RelatedArticles.gs");
 });
 
 describe("getRelatedArticles", () => {
+  test("mycr finding: converts an upstream Supabase failure into the generic data-service message", () => {
+    fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValue(fakeResponse(500, 'column "secret_internal_field" does not exist'));
+
+    let caught;
+    try {
+      getRelatedArticles("a1");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務暫時發生問題/);
+    expect(caught.message).not.toMatch(/secret_internal_field/);
+  });
+
+  test("mycr finding: is subject to the shared public-read rate limit (ANYONE_ANONYMOUS deployment)", () => {
+    global.CacheService.getScriptCache().put(
+      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
+      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
+    );
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => getRelatedArticles("a1")).toThrow(/使用量過大/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   test("calls related_articles with source_article_id/match_count:3, and returns [] with no further calls when the RPC returns no rows", () => {
     fakeConfig();
     const fetchSpy = jest.fn().mockReturnValueOnce(fakeResponse(200, "[]"));
@@ -52,7 +84,7 @@ describe("getRelatedArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/articles?id=in.(a2,a1)&select=id,title,category_id,created_at,updated_at,categories(id,name),article_tags(tags(id,name))",
+      "https://x.supabase.co/rest/v1/articles?id=in.(%22a2%22,%22a1%22)&select=id,title,category_id,created_at,updated_at,categories(id,name),article_tags(tags(id,name))",
       expect.objectContaining({ method: "GET" })
     );
     expect(results.map((r) => r.id)).toEqual(["a2", "a1"]); // RPC order preserved
@@ -71,7 +103,7 @@ describe("getRelatedArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining("id=in.(" + encodeURIComponent("a,b") + ")"),
+      expect.stringContaining("id=in.(" + encodeURIComponent('"a,b"') + ")"),
       expect.objectContaining({ method: "GET" })
     );
   });

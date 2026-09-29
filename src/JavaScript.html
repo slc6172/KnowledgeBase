@@ -9,6 +9,45 @@
   var INITIAL_ARTICLE_ID = document.body.dataset.initialArticleId || null;
 
   /**
+   * Markdown 消毒設定(mycr F-02 修正,見
+   * docs/specs/spec_markdown_sanitization_hardening.md)——DOMPurify 預設
+   * 設定會擋掉會執行程式碼的向量,但放行三種會改變頁面外觀或行為的 HTML:
+   * <form> 加 <input type="password">(可以偽裝成本專案自己的「需要密碼」
+   * 對話框)、<style> 或 style 屬性(可以整頁改版面、疊一層假的覆蓋畫面)、
+   * 遠端 <img>(開啟就會連到第三方)。文章內文/md 附件預覽/編輯器 preview
+   * 這三處渲染的是同一批已存進資料庫的文章內容,威脅模型一樣,共用這組標準
+   * 設定,保留圖片(使用者自己筆記可能會用到的正常功能)。
+   */
+  var MD_SANITIZE_CONFIG_ = {
+    FORBID_TAGS: [
+      'style', 'form', 'input', 'button', 'textarea', 'select', 'option',
+      'optgroup', 'label', 'fieldset', 'legend'
+    ],
+    FORBID_ATTR: ['style', 'action', 'formaction', 'method', 'srcset']
+  };
+
+  /**
+   * AI 問答回答用的更嚴格設定——在標準設定之上再多擋圖片。RagChat.gs 的
+   * prompt 要求模型「只根據參考文章的內容回答」,純文字摘要,沒有任何理由
+   * 需要包含圖片;RagChat.gs 自己的註解也承認,文章內容「不一定可信」這件事
+   * 目前只做到 prompt 層級的提醒,不是真正的沙箱隔離——放行遠端圖片等於留著
+   * 一個現成的資料外洩管道,擋掉它沒有功能成本。
+   */
+  var MD_SANITIZE_CONFIG_AI_ = {
+    FORBID_TAGS: MD_SANITIZE_CONFIG_.FORBID_TAGS.concat(['img', 'picture', 'source']),
+    FORBID_ATTR: MD_SANITIZE_CONFIG_.FORBID_ATTR
+  };
+
+  /**
+   * 四個渲染 Markdown 的地方(文章內文、md 附件預覽、AI 問答回答、EasyMDE
+   * 編輯器的 previewRender)共用同一個函式,不要各自重複同一行程式碼——
+   * 避免重蹈「改一處消毒設定、忘了另外幾處」的覆轍。cfg 省略時用標準設定。
+   */
+  function renderMarkdownSafe_(md, cfg) {
+    return DOMPurify.sanitize(marked.parse(md || ''), cfg || MD_SANITIZE_CONFIG_);
+  }
+
+  /**
    * 視圖切換——單頁 SPA 風格,不改變網址、不重新整理頁面(F1 決策)。
    */
   function showView(name) {
@@ -126,11 +165,25 @@
   /**
    * 抽成具名函式,讓桌面版 topbar 按鈕跟窄螢幕導覽抽屜裡的對應項目共用同一段
    * 邏輯(Ticket 01),不會有兩份互相可能漂移的重複程式碼。
+   *
+   * 順序刻意是「先 showView 讓 #view-article-editor 變成可見,再
+   * resetEditorForm() 清空表單」,不是隨手寫的——顛倒過來(先清空、再顯示)
+   * 曾經是真實發生過的 bug:resetEditorForm() 裡會呼叫
+   * `easyMDEInstance.value('')`,如果這時候編輯器所在的容器還是
+   * `display:none`(還沒 showView),CodeMirror 內部用來量測文字換行/寬度
+   * 的 `getBoundingClientRect` 在隱藏元素上量出來全部是 0,量錯的結果不會在
+   * 容器之後變成可見時自動重新計算——畫面上會卡著上一篇文章存檔當下的最後
+   * 顯示內容(視覺上的殘影,實際 `easyMDEInstance.value()` 讀出來已經是空的,
+   * 不影響真正存檔的資料),要等使用者開始打字或做了其他會觸發重繪的操作,
+   * 才會消失。跟 `openArticleEditor()`(編輯既有文章)已經是「先 showView
+   * 再設值」的順序對齊,`resetEditorForm()` 內部也另外補了一道
+   * `codemirror.refresh()` 當保險,兩者一起才不會依賴「呼叫端有沒有照順序
+   * 呼叫」這個容易在之後的改動裡不小心被打破的假設。
    */
   function handleNewArticleClick_() {
+    showView('article-editor');
     resetEditorForm();
     enterEditor();
-    showView('article-editor');
   }
 
   function handleCategoryManagerClick_() {
@@ -321,34 +374,48 @@
   }
 
   /**
+   * 三個地方(列表篩選、批次改分類、編輯器)都要把分類清單畫成一個平鋪的
+   * <select>,子分類縮排標示跟哪個頂層同組——原本各自重複實作一次同樣的
+   * 邏輯,合併成這個共用函式(mycr F-11 修正)。emptyLabel 是清單最上面
+   * 那個「都不選」選項的文字,三處原本就不一樣(「全部分類」vs
+   * 「未分類」),當參數傳。preserveValue 決定要不要在重建選項後把原本
+   * 選的值設回去——列表篩選、編輯器都需要(重新整理清單時不該讓使用者
+   * 選到的值跑掉),批次改分類每次打開都是全新選擇,不需要保留。
+   */
+  function buildCategorySelectOptions_(select, categories, emptyLabel, preserveValue) {
+    var currentValue = preserveValue ? select.value : null;
+    var topLevel = categories.filter(function (c) { return !c.parent_id; });
+    var children = categories.filter(function (c) { return c.parent_id; });
+
+    select.innerHTML = '<option value="">' + emptyLabel + '</option>';
+    topLevel.forEach(function (top) {
+      var topOpt = document.createElement('option');
+      topOpt.value = top.id;
+      topOpt.textContent = top.name;
+      select.appendChild(topOpt);
+
+      children
+        .filter(function (c) { return c.parent_id === top.id; })
+        .forEach(function (child) {
+          var childOpt = document.createElement('option');
+          childOpt.value = child.id;
+          childOpt.textContent = '\u3000\u2514 ' + child.name;
+          select.appendChild(childOpt);
+        });
+    });
+    if (preserveValue) select.value = currentValue;
+  }
+
+  /**
    * 列表篩選用的分類下拉——單純平鋪列出(子分類用縮排標示跟哪個頂層同組),
    * 不像分類管理頁那樣做完整樹狀操作,這裡只需要選一個分類當篩選條件。
    */
   function loadCategoryFilterOptions() {
     google.script.run
       .withSuccessHandler(function (categories) {
-        var select = document.getElementById('list-category-filter');
-        var currentValue = select.value;
-        var topLevel = categories.filter(function (c) { return !c.parent_id; });
-        var children = categories.filter(function (c) { return c.parent_id; });
-
-        select.innerHTML = '<option value="">全部分類</option>';
-        topLevel.forEach(function (top) {
-          var topOpt = document.createElement('option');
-          topOpt.value = top.id;
-          topOpt.textContent = top.name;
-          select.appendChild(topOpt);
-
-          children
-            .filter(function (c) { return c.parent_id === top.id; })
-            .forEach(function (child) {
-              var childOpt = document.createElement('option');
-              childOpt.value = child.id;
-              childOpt.textContent = '\u3000\u2514 ' + child.name;
-              select.appendChild(childOpt);
-            });
-        });
-        select.value = currentValue;
+        buildCategorySelectOptions_(
+          document.getElementById('list-category-filter'), categories, '全部分類', true
+        );
       })
       .withFailureHandler(function (err) { showError(err.message); })
       .listCategories();
@@ -357,6 +424,16 @@
   // 瀏覽模式(非搜尋)的分頁——之後要調整每頁筆數,直接改這個常數。
   var ARTICLE_LIST_PAGE_SIZE = 20;
   var currentListPage = 0; // 0-indexed
+
+  /**
+   * mycr F-06 修正(見 docs/specs/spec_stale_async_response_guards.md）：
+   * loadArticleList()、performSearch() 都寫進同一塊共用畫面(都呼叫
+   * renderArticleCards)——google.script.run 的回應不保證依序抵達,篩選
+   * 條件或搜尋字變動很快時,舊的回應可能比新的晚到,把畫面蓋回舊的結果。
+   * 這兩個函式必須共用同一個請求序號,不能各自獨立:不然瀏覽模式的舊回應
+   * 還是可能蓋掉搜尋模式的新回應,反之亦然。
+   */
+  var articleResultsRequestSeq_ = 0;
 
   /**
    * 更新分頁控制的顯示狀態:第一頁停用「上一頁」,這頁筆數不到一整頁時停用
@@ -380,6 +457,7 @@
   function loadArticleList() {
     setSearchBusy(true);
     hideAiAnswerPanel();
+    var seq = ++articleResultsRequestSeq_;
     var statusFilter = getSelectedStatusFilter();
     var categoryFilter = getSelectedCategoryFilter();
     var tagFilter = getSelectedTagIds();
@@ -393,11 +471,13 @@
 
     google.script.run
       .withSuccessHandler(function (articles) {
+        if (seq !== articleResultsRequestSeq_) return; // 已經有更新的請求,這個回應過期了
         setSearchBusy(false);
         renderArticleCards(articles);
         updateArticleListPager(articles.length);
       })
       .withFailureHandler(function (err) {
+        if (seq !== articleResultsRequestSeq_) return;
         setSearchBusy(false);
         showError(err.message);
       })
@@ -407,6 +487,7 @@
   function performSearch(queryText) {
     setSearchBusy(true);
     hideArticleListPager();
+    var seq = ++articleResultsRequestSeq_;
     var statusFilter = getSelectedStatusFilter();
     var categoryFilter = getSelectedCategoryFilter();
     var tagFilter = getSelectedTagIds();
@@ -421,6 +502,7 @@
 
     google.script.run
       .withSuccessHandler(function (articles) {
+        if (seq !== articleResultsRequestSeq_) return; // 已經有更新的請求,這個回應過期了
         setSearchBusy(false);
         var filtered = articles;
         if (statusFilter === 'draft') {
@@ -432,13 +514,16 @@
         renderArticleCards(filtered);
       })
       .withFailureHandler(function (err) {
+        if (seq !== articleResultsRequestSeq_) return;
         setSearchBusy(false);
         showError(err.message);
       })
       .searchArticles(queryText, searchOpts);
 
     // 跟搜尋結果平行載入,不互相阻塞——搜尋結果列表本身完全不受影響,見
-    // loadAiAnswer 內部對 cachedWritePassword 的判斷。
+    // loadAiAnswer 內部對 cachedWritePassword 的判斷。loadAiAnswer 自己有
+    // 獨立的安全機制(每次呼叫重新建立自己專屬的 DOM 元素),不需要、也不
+    // 共用這裡的 articleResultsRequestSeq_。
     loadAiAnswer(queryText);
   }
 
@@ -525,7 +610,7 @@
     // 不額外套 hljs——整個專案目前的慣例是 markdown 渲染出來的內容一律不加語法上色。
     // marked.parse 的結果先經過 DOMPurify 消毒再指定給 innerHTML,避免內容裡
     // 夾帶的可執行內容被原樣執行(細節見 README 已知問題修復紀錄)。
-    answerEl.innerHTML = DOMPurify.sanitize(marked.parse(result.answer || ''));
+    answerEl.innerHTML = renderMarkdownSafe_(result.answer, MD_SANITIZE_CONFIG_AI_);
     turnEl.appendChild(answerEl);
 
     var sourcesEl = document.createElement('div');
@@ -695,26 +780,9 @@
   function loadBatchCategoryOptions() {
     google.script.run
       .withSuccessHandler(function (categories) {
-        var select = document.getElementById('batch-category-select');
-        var topLevel = categories.filter(function (c) { return !c.parent_id; });
-        var children = categories.filter(function (c) { return c.parent_id; });
-
-        select.innerHTML = '<option value="">未分類</option>';
-        topLevel.forEach(function (top) {
-          var topOpt = document.createElement('option');
-          topOpt.value = top.id;
-          topOpt.textContent = top.name;
-          select.appendChild(topOpt);
-
-          children
-            .filter(function (c) { return c.parent_id === top.id; })
-            .forEach(function (child) {
-              var childOpt = document.createElement('option');
-              childOpt.value = child.id;
-              childOpt.textContent = '\u3000\u2514 ' + child.name;
-              select.appendChild(childOpt);
-            });
-        });
+        buildCategorySelectOptions_(
+          document.getElementById('batch-category-select'), categories, '未分類', false
+        );
       })
       .withFailureHandler(function (err) { showError(err.message); })
       .listCategories();
@@ -793,6 +861,9 @@
     showView('article-detail');
     google.script.run
       .withSuccessHandler(function (article) {
+        // 同上 loadArticleDetail 的防過期理由——這裡是分享連結進來的獨立
+        // 路徑，本來就不共用 loadArticleDetail，要各自檢查一次。
+        if (articleId !== currentDetailArticleId) return;
         renderArticleDetail(article);
         mountAttachmentPanel(document.getElementById('detail-attachment-panel'), articleId);
         loadRelatedArticles(articleId);
@@ -806,6 +877,12 @@
   function loadArticleDetail(articleId) {
     google.script.run
       .withSuccessHandler(function (article) {
+        // mycr F-06 修正(見 docs/specs/spec_stale_async_response_guards.md）：
+        // google.script.run 的回應不保證依序抵達，快速切換文章時，這個回應
+        // 可能是比較早呼叫、比較晚才回來的舊文章——這時 currentDetailArticleId
+        // 已經被之後的 openArticleDetail 改成別的文章了，不等於就代表這個
+        // 回應過期，靜默跳過，不要蓋掉畫面上已經正確顯示的內容。
+        if (articleId !== currentDetailArticleId) return;
         renderArticleDetail(article);
       })
       .withFailureHandler(function (err) { showError(err.message); })
@@ -838,7 +915,7 @@
 
     // marked.parse 的結果先經過 DOMPurify 消毒再指定給 innerHTML,避免文章
     // 內文裡夾帶的可執行內容被原樣執行(細節見 README 已知問題修復紀錄)。
-    document.getElementById('detail-content').innerHTML = DOMPurify.sanitize(marked.parse(article.content_md || ''));
+    document.getElementById('detail-content').innerHTML = renderMarkdownSafe_(article.content_md);
   }
 
   /**
@@ -854,6 +931,8 @@
 
     google.script.run
       .withSuccessHandler(function (articles) {
+        // 同上 loadArticleDetail 的防過期理由。
+        if (articleId !== currentDetailArticleId) return;
         renderRelatedArticles(articles);
       })
       .withFailureHandler(function () {
@@ -1061,7 +1140,7 @@
           mdDiv.className = 'detail-content attachment-preview__markdown';
           // marked.parse 的結果先經過 DOMPurify 消毒再指定給 innerHTML,理由
           // 同上面文章內文/AI 問答回答兩處(細節見 README 已知問題修復紀錄)。
-          mdDiv.innerHTML = DOMPurify.sanitize(marked.parse(content || ''));
+          mdDiv.innerHTML = renderMarkdownSafe_(content);
           previewBox.appendChild(mdDiv);
         } else {
           var pre = document.createElement('pre');
@@ -1091,6 +1170,14 @@
   }
 
   /**
+   * 附件多檔案上傳一次最多選幾個檔案——純粹是使用者體驗上的合理猜測,不是
+   * 平台強制限制(不像單檔案 20MB 上限那樣是為了避免打穿 Storage 額度/
+   * google.script.run payload 上限而設的)。超過時前端直接擋下、不送出任何
+   * 請求,理由跟數字選擇見 docs/specs/spec_attachment_multi_upload.md。
+   */
+  var ATTACHMENT_UPLOAD_BATCH_MAX_FILES_ = 20;
+
+  /**
    * 附件清單 + 上傳/加連結區塊——掛進任一個容器元素,詳情頁跟編輯頁(G3)
    * 都呼叫這個函式,共用同一份邏輯,不各寫一份。容器內的子元素一律用
    * class + querySelector 定位,不用全域 id,兩個實例同時存在畫面上也不會互相
@@ -1108,7 +1195,7 @@
           '<div class="attachment-panel-folder-suggestions tag-input__suggestions hidden"></div>' +
         '</div>' +
         '<div class="attachment-upload__file">' +
-          '<input type="file" class="attachment-panel-file-input">' +
+          '<input type="file" class="attachment-panel-file-input" multiple>' +
           '<button type="button" class="btn attachment-panel-upload-btn">上傳檔案</button>' +
         '</div>' +
         '<div class="attachment-upload__url">' +
@@ -1372,10 +1459,63 @@
         .listAttachments(articleId);
     }
 
-    uploadBtn.addEventListener('click', function () {
-      var file = fileInput.files[0];
-      if (!file) {
+    /**
+     * 依序(非平行)處理這一批要上傳的檔案:等前一個檔案有結果(成功或失敗)
+     * 才開始下一個。這樣可以避免密碼還沒快取時多個檔案同時觸發密碼輸入框的
+     * 競態,也讓「上傳中(N/M)」這種進度文字天然好維護(細節與取捨見
+     * docs/specs/spec_attachment_multi_upload.md 的 Further Notes)。
+     * results 會依序累積每個檔案的 { name, ok, message } 結果,全部處理完後
+     * 呼叫 onAllDone(results) 一次。
+     */
+    function uploadNextFile_(files, index, folderId, results, onAllDone) {
+      if (index >= files.length) {
+        onAllDone(results);
+        return;
+      }
+      var file = files[index];
+      uploadBtn.textContent = '上傳中…(' + (index + 1) + '/' + files.length + ')';
+
+      readFileAsBase64(file)
+        .then(function (base64Data) {
+          runProtected(
+            'uploadAttachmentFile',
+            [articleId, file.name, base64Data, file.type || 'application/octet-stream', folderId],
+            function () {
+              results.push({ name: file.name, ok: true });
+              uploadNextFile_(files, index + 1, folderId, results, onAllDone);
+            },
+            function (err) {
+              results.push({ name: file.name, ok: false, message: err.message });
+              uploadNextFile_(files, index + 1, folderId, results, onAllDone);
+            }
+          );
+        })
+        .catch(function () {
+          results.push({ name: file.name, ok: false, message: '讀取檔案失敗' });
+          uploadNextFile_(files, index + 1, folderId, results, onAllDone);
+        });
+    }
+
+    function summarizeUploadResults_(results) {
+      var failed = results.filter(function (r) { return !r.ok; });
+      if (failed.length === 0) {
+        return results.length === 1 ? '已上傳' : '已上傳 ' + results.length + ' 個檔案';
+      }
+      var succeededCount = results.length - failed.length;
+      var failedText = failed
+        .map(function (r) { return r.name + '(' + r.message + ')'; })
+        .join('、');
+      return '已上傳 ' + succeededCount + ' 個檔案,' + failed.length + ' 個失敗:' + failedText;
+    }
+
+    function handleUploadClick_() {
+      var files = Array.prototype.slice.call(fileInput.files);
+      if (files.length === 0) {
         showError('請先選擇檔案');
+        return;
+      }
+      if (files.length > ATTACHMENT_UPLOAD_BATCH_MAX_FILES_) {
+        showError('一次最多選擇 ' + ATTACHMENT_UPLOAD_BATCH_MAX_FILES_ + ' 個檔案,請分批上傳');
         return;
       }
 
@@ -1383,37 +1523,28 @@
       uploadBtn.textContent = '上傳中…';
 
       resolveFolderId(function (folderId) {
-        readFileAsBase64(file)
-          .then(function (base64Data) {
-            runProtected(
-              'uploadAttachmentFile',
-              [articleId, file.name, base64Data, file.type || 'application/octet-stream', folderId],
-              function () {
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = '上傳檔案';
-                fileInput.value = '';
-                folderInput.value = '';
-                refresh();
-                showToast('已上傳');
-              },
-              function (err) {
-                uploadBtn.disabled = false;
-                uploadBtn.textContent = '上傳檔案';
-                showError(err.message);
-              }
-            );
-          })
-          .catch(function () {
-            uploadBtn.disabled = false;
-            uploadBtn.textContent = '上傳檔案';
-            showError('讀取檔案失敗');
-          });
+        uploadNextFile_(files, 0, folderId, [], function (results) {
+          uploadBtn.disabled = false;
+          uploadBtn.textContent = '上傳檔案';
+          fileInput.value = '';
+          folderInput.value = '';
+          refresh();
+          var hasFailure = results.some(function (r) { return !r.ok; });
+          var summary = summarizeUploadResults_(results);
+          if (hasFailure) {
+            showError(summary);
+          } else {
+            showToast(summary);
+          }
+        });
       }, function (err) {
         uploadBtn.disabled = false;
         uploadBtn.textContent = '上傳檔案';
         showError(err.message);
       });
-    });
+    }
+
+    uploadBtn.addEventListener('click', handleUploadClick_);
 
     /**
      * 附件的自訂網址只接受一般網頁連結,理由跟後端 addAttachmentUrl_ 的
@@ -1492,33 +1623,23 @@
         'quote', 'unordered-list', 'ordered-list', '|',
         'link', 'image', 'code', '|',
         'preview'
-      ]
+      ],
+      // EasyMDE 內建的 preview 是它自己用 Marked 渲染的,預設不消毒(GitHub
+      // 官方安全公告 GHSA-85q9-7467-r53q)。這裡的文章編輯器不需要密碼就能
+      // 打開(openArticleEditor 呼叫的是公開讀取函式 getArticle),任何匿名
+      // 訪客都可能點開既有文章、按下 preview——不覆寫的話,這會是整個專案
+      // 唯一一條不需要密碼就能觸發的儲存型 XSS。改成呼叫跟文章內文/RAG 答案/
+      // md 附件預覽完全一樣的消毒管線,不是另外發明新的處理方式。
+      previewRender: function (plainText) {
+        return renderMarkdownSafe_(plainText);
+      }
     });
   }
 
   function renderCategoryOptions() {
-    var select = document.getElementById('editor-category');
-    var currentValue = select.value;
-    var topLevel = cachedCategories.filter(function (c) { return !c.parent_id; });
-    var children = cachedCategories.filter(function (c) { return c.parent_id; });
-
-    select.innerHTML = '<option value="">未分類</option>';
-    topLevel.forEach(function (top) {
-      var topOpt = document.createElement('option');
-      topOpt.value = top.id;
-      topOpt.textContent = top.name;
-      select.appendChild(topOpt);
-
-      children
-        .filter(function (c) { return c.parent_id === top.id; })
-        .forEach(function (child) {
-          var childOpt = document.createElement('option');
-          childOpt.value = child.id;
-          childOpt.textContent = '\u3000\u2514 ' + child.name; // 全形空白 + 樹狀符號,標示為子分類
-          select.appendChild(childOpt);
-        });
-    });
-    select.value = currentValue;
+    buildCategorySelectOptions_(
+      document.getElementById('editor-category'), cachedCategories, '未分類', true
+    );
   }
 
   function loadCategoryOptions() {
@@ -1827,7 +1948,15 @@
     editingArticleId = null;
     document.getElementById('editor-heading').textContent = '新增文章';
     document.getElementById('editor-title').value = '';
-    if (easyMDEInstance) easyMDEInstance.value('');
+    if (easyMDEInstance) {
+      easyMDEInstance.value('');
+      // 保險:見 handleNewArticleClick_ 上方註解——如果容器這時候剛好還是
+      // hidden,CodeMirror 量測文字換行/寬度用的 getBoundingClientRect 會
+      // 量出全部是 0,之後容器變成可見也不會自動重算,畫面會卡著上一次顯示的
+      // 內容。呼叫 refresh() 強制它用容器目前的實際尺寸重新量測、重繪
+      // (容器如果本來就已經可見,這行只是多做一次無害的重繪)。
+      easyMDEInstance.codemirror.refresh();
+    }
     document.getElementById('editor-category').value = '';
     editorTagPicker.setSelected([]);
     // 新文章還沒有 id,附件區塊先隱藏、清空(避免殘留上一篇文章的附件清單),
@@ -1844,16 +1973,35 @@
     document.getElementById('editor-heading').textContent = '編輯文章';
     enterEditor();
 
+    // mycr F-06 修正(見 docs/specs/spec_stale_async_response_guards.md）：
+    // editingArticleId 提前到這裡同步設定(不是等回呼才設定),比照
+    // currentDetailArticleId 的既有模式——這樣使用者在資料還沒載入完成前
+    // 點了「新增文章」或另一篇文章的編輯器,editingArticleId 會正確反映
+    // 目前使用者真正在做的事,回呼裡才能靠它判斷這次回應是否已經過期。
+    editingArticleId = articleId;
+    setEditorBusy(true);
+
     google.script.run
       .withSuccessHandler(function (article) {
-        editingArticleId = article.id;
+        setEditorBusy(false);
+        // 回應抵達時,使用者可能已經點了「新增文章」(editingArticleId 被
+        // resetEditorForm 改回 null)或另一篇文章的編輯器(editingArticleId
+        // 被改成別的 id)——這兩種情況這次回應都已經過期,不要把舊資料填回
+        // 表單、也不要把 editingArticleId 又蓋回去。
+        if (editingArticleId !== articleId) return;
         document.getElementById('editor-title').value = article.title || '';
-        if (easyMDEInstance) easyMDEInstance.value(article.content_md || '');
+        if (easyMDEInstance) {
+          easyMDEInstance.value(article.content_md || '');
+          easyMDEInstance.codemirror.refresh(); // 保險,理由見 resetEditorForm() 上方註解
+        }
         document.getElementById('editor-category').value = article.category_id || '';
         editorTagPicker.setSelected((article.tags || []).map(function (t) { return t.name; }));
         showEditorAttachmentSection(article.id, article.status);
       })
-      .withFailureHandler(function (err) { showError(err.message); })
+      .withFailureHandler(function (err) {
+        setEditorBusy(false);
+        showError(err.message);
+      })
       .getArticle(articleId);
   }
 
@@ -2042,6 +2190,21 @@
       deleteBtn.className = 'btn category-node__action category-node__delete';
       deleteBtn.textContent = '刪除';
       deleteBtn.addEventListener('click', function () {
+        // 逐行語意校對才第一次發現的落差(2026-09):文章列表(deleteArticle)、
+        // 附件資料夾(deleteFolder)、標籤(deleteTag)這三個「一鍵刪除」的
+        // 動作,點下去都會先跳 window.confirm() 再真的送出——分類刪除原本
+        // 是唯一漏掉這道確認的一鍵刪除動作,不是刻意的設計(對照「移動」/
+        // 「合併至…」那種要先選目標、按下「確定」才送出的兩段式互動,那兩個
+        // 沒有另外疊加 confirm() 才是刻意的,靠兩段式互動本身的操作摩擦力
+        // 取代 confirm())。訊息內容照 deleteCategory_ 上方註解裡「子分類與
+        // 參照此分類的文章都靠 on delete set null 自動清掉」這件事來寫,
+        // 讓使用者知道實際後果不是連文章一起刪掉。
+        if (!window.confirm(
+          '確定要刪除這個分類嗎?底下的文章會變成未分類,子分類(如果有)會' +
+            '變成頂層分類,兩者都不會被刪除。'
+        )) {
+          return;
+        }
         deleteCategoryNode(category.id);
       });
       row.appendChild(deleteBtn);

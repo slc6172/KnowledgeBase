@@ -152,3 +152,15 @@ Gemini embedding 呼叫、RPC 呼叫、補查詢呼叫,用回傳序列區分)。
 - `hybrid_search_articles` 本身(SQL 定義)不在本 spec 修改範圍——已經是
   `schema.sql` 交付內容的一部分,套用到真正的 Supabase 專案之後才能實際跑通這裡
   設計的 GAS 端流程,建議屆時做一次端到端的 smoke test。
+- **語意搜尋的 Gemini 用量節流(2026-09 補記)**：這份 spec 原始版本完全沒有討論
+  `searchArticles` 觸發的 `generateEmbedding_` 呼叫要不要節流——當時的假設是
+  Web App 部署層級是 `MYSELF`,只有部署者自己連得上,不會有濫用問題。後來確認
+  實際部署一直是不用登入 Google 就能連線,`searchArticles` 又是刻意設計成公開、
+  不需密碼的讀取函式,等於任何人都能無限次觸發真正花錢的 Gemini API 呼叫。
+  `docs/specs/spec_rag_qa.md` 其實已經為了同一種資源(Gemini 用量)訂過節流機制
+  (`askKnowledgeBase` 的密碼門檻),但沒有回頭套用到這裡。修法見
+  `src/Search.gs` 的 `SEMANTIC_SEARCH_RATE_LIMIT_`/
+  `SEMANTIC_SEARCH_RATE_LIMIT_WINDOW_SECONDS_`(README 已知問題修復紀錄第 33
+  條)——這兩個數字目前是概略估計,沒有實際用量數據支撐,之後如果真的觀察到
+  合法使用者也會被擋到,或者反過來覺得上限太寬鬆,直接調整這兩個變數即可,不需要
+  改動其他程式碼。

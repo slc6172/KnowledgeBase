@@ -23,6 +23,7 @@ beforeEach(() => {
   fakeConfig();
   loadGas("../../src/Config.gs");
   loadGas("../../src/HttpTransport.gs");
+  loadGas("../../src/ErrorHandling.gs");
   loadGas("../../src/SupabaseClient.gs");
 });
 
@@ -83,25 +84,54 @@ describe("supabaseRequest", () => {
   });
 });
 
+describe("postgrestQuoteValue_", () => {
+  // 只用在 inFilter_,不用在 eqFilter_——這裡測的是這個函式本身的行為,
+  // 不是它在哪裡被呼叫。詳細的來回過程見 SupabaseClient.gs 的 inFilter_
+  // 上方註解。
+  test("wraps any value in double quotes", () => {
+    expect(postgrestQuoteValue_("123")).toBe('"123"');
+    expect(postgrestQuoteValue_("hello")).toBe('"hello"');
+  });
+
+  test("escapes an internal backslash before escaping an internal double quote (order matters, otherwise the escaping backslash added for the quote would itself get escaped)", () => {
+    expect(postgrestQuoteValue_('a\\b')).toBe('"a\\\\b"');
+    expect(postgrestQuoteValue_('a"b')).toBe('"a\\"b"');
+    expect(postgrestQuoteValue_('a\\"b')).toBe('"a\\\\\\"b"');
+  });
+
+  test("leaves a comma or parenthesis inside the value untouched (they only need the surrounding quotes, not their own escaping)", () => {
+    expect(postgrestQuoteValue_("a,b")).toBe('"a,b"');
+    expect(postgrestQuoteValue_("a(b)")).toBe('"a(b)"');
+  });
+});
+
 describe("eqFilter_ / inFilter_", () => {
-  test("eqFilter_ builds a plain column=eq.value clause", () => {
+  test("eqFilter_ builds a plain column=eq.value clause — deliberately NOT PostgREST-quoted", () => {
+    // 2026-09 這裡曾經一度改成也包 PostgREST 雙引號,部署後發現 PostgREST
+    // 的 eq. 語法根本不會把外層引號剝掉,UUID 欄位直接 400——已經復原,
+    // 細節見 SupabaseClient.gs 的 inFilter_ 上方註解、README 已知問題
+    // 修復紀錄第 65 條。這個測試名稱特別強調「deliberately NOT」,是為了
+    // 避免以後有人看到 inFilter_ 有包雙引號,誤以為 eqFilter_ 這裡也應該
+    // 要有、把這行「修好」。
     expect(eqFilter_("id", "123")).toBe("id=eq.123");
   });
 
-  test("eqFilter_ URL-encodes values containing PostgREST-reserved characters", () => {
-    // & 會被誤判成下一個 query 參數的開始,, 在 in.() 語境下是清單分隔符——
-    // 這裡確認就算是單一 eq 過濾條件,一樣統一做編碼,不區分欄位是不是自由
-    // 文字輸入。
+  test("eqFilter_ URL-encodes values containing special characters, without any extra PostgREST quoting", () => {
     expect(eqFilter_("name", "a&b,c")).toBe("name=eq." + encodeURIComponent("a&b,c"));
   });
 
-  test("inFilter_ builds a column=in.(v1,v2) clause", () => {
-    expect(inFilter_("id", ["a", "b"])).toBe("id=in.(a,b)");
+  test("inFilter_ builds a column=in.(\"v1\",\"v2\") clause, each value PostgREST-quoted then URL-encoded", () => {
+    // 跟 eqFilter_ 不同,in.() 的清單語法會把值兩側的雙引號正確剝掉才轉型
+    // ——這點已經在真實的 Supabase 專案上,對一個真正的 UUID 主鍵實測
+    // 驗證過(唯讀查詢,查得到資料),不是只憑文件推測。
+    expect(inFilter_("id", ["a", "b"])).toBe(
+      "id=in.(" + encodeURIComponent('"a"') + "," + encodeURIComponent('"b"') + ")"
+    );
   });
 
-  test("inFilter_ URL-encodes each value so a comma inside a value can't be mistaken for the list separator", () => {
+  test("inFilter_ correctly round-trips a value containing a comma instead of it being mistaken for the list separator", () => {
     expect(inFilter_("name", ["a,b", "c"])).toBe(
-      "name=in.(" + encodeURIComponent("a,b") + ",c)"
+      "name=in.(" + encodeURIComponent('"a,b"') + "," + encodeURIComponent('"c"') + ")"
     );
   });
 });

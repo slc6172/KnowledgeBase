@@ -44,58 +44,11 @@ describe("generateEmbedding_", () => {
 
     expect(() => generateEmbedding_("hello")).toThrow(/429.*rate limited/s);
   });
-});
 
-describe("regenerateArticleEmbedding_", () => {
-  test("embeds title + '\\n\\n' + content_md and PATCHes the result back to articles.embedding", () => {
+  test("throws a clear message (not a raw TypeError) when the 2xx response has no embedding.values", () => {
     fakeConfigWithGemini();
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(
-        fakeResponse(200, JSON.stringify({ embedding: { values: [0.7, 0.8] } }))
-      ) // gemini
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')); // supabase patch
-    global.httpFetch_ = fetchSpy;
+    global.httpFetch_ = jest.fn().mockReturnValue(fakeResponse(200, JSON.stringify({})));
 
-    regenerateArticleEmbedding_({ id: "a1", title: "Hi", content_md: "Body" });
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      1,
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
-      expect.objectContaining({
-        payload: JSON.stringify({
-          model: "models/gemini-embedding-001",
-          content: { parts: [{ text: "Hi\n\nBody" }] },
-          outputDimensionality: 768
-        })
-      })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
-      expect.objectContaining({
-        method: "PATCH",
-        payload: JSON.stringify({ embedding: [0.7, 0.8] })
-      })
-    );
-  });
-
-  test("URL-encodes article.id containing PostgREST-reserved characters", () => {
-    fakeConfigWithGemini();
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(
-        fakeResponse(200, JSON.stringify({ embedding: { values: [0.1] } }))
-      )
-      .mockReturnValueOnce(fakeResponse(200, "[]"));
-    global.httpFetch_ = fetchSpy;
-
-    regenerateArticleEmbedding_({ id: "a&b", title: "Hi", content_md: "Body" });
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a%26b",
-      expect.objectContaining({ method: "PATCH" })
-    );
+    expect(() => generateEmbedding_("hello")).toThrow(/AI 服務回應格式異常/);
   });
 });

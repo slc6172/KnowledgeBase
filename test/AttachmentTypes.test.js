@@ -26,3 +26,30 @@ describe("detectAttachmentType_", () => {
     expect(detectAttachmentType_("README")).toBe("code");
   });
 });
+
+describe("resolveUploadContentType_", () => {
+  test("maps known-safe extensions to a fixed Content-Type (case-insensitive)", () => {
+    expect(resolveUploadContentType_("cat.png")).toBe("image/png");
+    expect(resolveUploadContentType_("cat.JPG")).toBe("image/jpeg");
+    expect(resolveUploadContentType_("archive.zip")).toBe("application/zip");
+    expect(resolveUploadContentType_("notes.md")).toBe("text/markdown");
+    expect(resolveUploadContentType_("doc.pdf")).toBe("application/pdf");
+    expect(resolveUploadContentType_("report.docx")).toBe(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+  });
+
+  test("forces application/octet-stream for svg, even though detectAttachmentType_ classifies it as photo", () => {
+    // svg 是可以帶 <script> 的 XML 文件,不是單純的點陣圖——不能比照其他圖片
+    // 副檔名直接信任成 image/svg+xml,否則簽名連結被直接開啟時瀏覽器可能會
+    // 把內嵌的 script 當文件內容執行。
+    expect(resolveUploadContentType_("logo.svg")).toBe("application/octet-stream");
+  });
+
+  test("forces application/octet-stream for unknown/code extensions (e.g. html, js) and files with no extension", () => {
+    expect(resolveUploadContentType_("page.html")).toBe("application/octet-stream");
+    expect(resolveUploadContentType_("script.js")).toBe("application/octet-stream");
+    expect(resolveUploadContentType_("weird.xyz")).toBe("application/octet-stream");
+    expect(resolveUploadContentType_("README")).toBe("application/octet-stream");
+  });
+});

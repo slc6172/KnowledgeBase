@@ -6,12 +6,46 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <?
+    // 是否鎖定下面這 4 個 CDN 套件(easymde/marked/dompurify/highlight.js)的
+    // 版本號,並用 integrity 屬性做 SRI 完整性驗證。
+    //
+    // true(預設,建議平常保持這樣):瀏覽器下載這幾個檔案時,會用下面寫死的
+    // hash 核對內容有沒有被竄改,一個位元組對不上就直接拒絕載入、整個檔案
+    // 不會執行——不管是 jsdelivr 被 MITM,還是這幾個套件的發布權限被盜、
+    // 惡意版本被發布出來,都不會被默默套用到每個訪客身上(包含你自己輸入
+    // 寫入密碼的當下)。
+    //
+    // false:改回抓 jsdelivr 上的最新版,不驗證雜湊(不驗證是必要的——雜湊
+    // 是對應「這個版本」算出來的,版本一直變的話,固定雜湊只會讓瀏覽器一直
+    // 擋下正常的新版本,等於整個網站打不開)。想檢查/升級版本時的流程:
+    //   1. 把這裡改成 false,儲存、重新整理頁面確認新版本沒有把
+    //      EasyMDE/marked/DOMPurify/highlight.js 用壞(附件預覽、程式碼
+    //      高亮、文章編輯器都测一下)。
+    //   2. 確認沒問題後,把下面 6 個 URL 裡的版本號改成新版本,並重新算
+    //      對應的 integrity(例如 `openssl dgst -sha384 -binary 檔案 |
+    //      openssl base64 -A`,前面加上 "sha384-";或用
+    //      https://www.srihash.org/ 貼網址直接產生)。
+    //   3. 把這裡改回 true。
+    // DOMPurify 是這個專案唯一的 XSS 防線,建議比其他幾個套件更常回來檢查
+    // 一次;其餘幾個是變動慢的成熟套件,不用太頻繁。
+    var CDN_PIN_VERSIONS_ = true;
+  ?>
+  <? if (CDN_PIN_VERSIONS_) { ?>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde@2.21.0/dist/easymde.min.css" integrity="sha384-ZoLYv3S+AsZX+zhbN1D1+WPpc8f+DmLfxfgw+qn0Nq8wJPOYQQXEW5ZrRhcGozlG" crossorigin="anonymous">
+  <script src="https://cdn.jsdelivr.net/npm/easymde@2.21.0/dist/easymde.min.js" integrity="sha384-mTM6vzy+/UiHrMBClNGViM9qEv0/26iCGqpJKhSzdnjrxbKjO3vkT62ujXQ8B5iv" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@18.0.12/lib/marked.umd.js" integrity="sha384-TuL/7aNYXEDWjlcHi2CR+Een2A5pigrtJ97Tmx3WG69mx5kCSp8yKHRISW9xSmgq" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.14/dist/purify.min.js" integrity="sha384-46dPGH1XlTmj7bc50bqLjTdORXs/3EP2QpA/6EWbelYWOY9VGp+87RT61S3Mcslb" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.12.0/build/highlight.min.js" integrity="sha384-wjfDDhOPPdjtva8vWBhWeVprSpmxisEu5aYT3q1JyACqXpdKpo3PWZTMVq24MBix" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.12.0/build/styles/atom-one-light.min.css" integrity="sha384-w6Ujm1VWa9HYFqGc89oAPn/DWDi2gUamjNrq9DRvEYm2X3ClItg9Y9xs1ViVo5b5" crossorigin="anonymous">
+  <? } else { ?>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
   <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/highlight.js/latest/highlight.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/highlight.js/latest/styles/atom-one-light.min.css">
+  <? } ?>
   <?!= include('Stylesheet'); ?>
 </head>
 <body data-initial-article-id="<?= initialArticleId ?>">

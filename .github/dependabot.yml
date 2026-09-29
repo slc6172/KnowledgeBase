@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # CI 用到的 action 都鎖成完整 commit SHA(見 test/CiWorkflowHardening.test.js),
+  # SHA 不會自己更新,需要有人定期提醒——Dependabot 會開 PR 把 SHA 跟行尾的
+  # 版本註解(# v7.0.1 這種)一起換成新的。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # 開發期套件(Babel/Jest/jsdom 等,不進部署包)。
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        patterns: ["*"]
+    ignore:
+      # marked、dompurify 是「測試用的版本必須跟 src/Index.html 用 CDN 鎖定的版本
+      # 完全一致」的兩個套件(見 test/BrowserLibraryVersionSync.test.js)。只改
+      # package.json 會讓測試跑的版本跟訪客實際載入的版本脫鉤,所以不讓自動更新
+      # 單獨改它們——要升級,必須手動一起改:Index.html 的版本號 + SRI hash、
+      # package.json、package-lock.json 四處,並確認 CdnAssetIntegrity 測試通過。
+      - dependency-name: "marked"
+      - dependency-name: "dompurify"

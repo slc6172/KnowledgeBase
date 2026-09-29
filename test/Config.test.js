@@ -1,4 +1,5 @@
 const { loadGas } = require("./helpers/loadGas");
+const { fakeLogger } = require("./helpers/testSetup");
 
 describe("getConfig_", () => {
   beforeEach(() => {
@@ -59,22 +60,46 @@ describe("getConfig_", () => {
   });
 });
 
-describe("setupScriptProperties", () => {
-  test("writes SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GEMINI_API_KEY and WRITE_PASSWORD", () => {
-    const setProperties = jest.fn();
+describe("debugConfig_", () => {
+  function setupProps(writePassword) {
     global.PropertiesService = {
-      getScriptProperties: () => ({ setProperties })
+      getScriptProperties: () => ({
+        getProperty: (key) => {
+          if (key === "SUPABASE_URL") return "https://x.supabase.co";
+          if (key === "SUPABASE_SERVICE_ROLE_KEY") return "srv-key-123456789";
+          if (key === "GEMINI_API_KEY") return "gem-key-123456789";
+          if (key === "WRITE_PASSWORD") return writePassword;
+          return null;
+        }
+      })
     };
+  }
+
+  test("mycr F-05 fix: warns when WRITE_PASSWORD is shorter than the recommended minimum, without ever logging any part of the password itself", () => {
+    setupProps("short1");
+    const logger = fakeLogger();
     loadGas("../../src/Config.gs");
+    loadGas("../../src/Auth.gs");
 
-    setupScriptProperties_();
+    debugConfig_();
 
-    expect(setProperties).toHaveBeenCalledTimes(1);
-    expect(Object.keys(setProperties.mock.calls[0][0]).sort()).toEqual([
-      "GEMINI_API_KEY",
-      "SUPABASE_SERVICE_ROLE_KEY",
-      "SUPABASE_URL",
-      "WRITE_PASSWORD"
-    ]);
+    const writePasswordLine = logger.logs.find((l) => l.indexOf("WRITE_PASSWORD") === 0);
+    expect(writePasswordLine).toBeDefined();
+    expect(writePasswordLine).toMatch(/6 字元/);
+    expect(writePasswordLine).toMatch(/建議/); // 有警告字樣
+    expect(writePasswordLine).not.toMatch(/short1/); // 絕對不能包含密碼本身
+  });
+
+  test("mycr F-05 fix: no warning when WRITE_PASSWORD already meets the recommended minimum length", () => {
+    setupProps("a-plenty-long-write-password");
+    const logger = fakeLogger();
+    loadGas("../../src/Config.gs");
+    loadGas("../../src/Auth.gs");
+
+    debugConfig_();
+
+    const writePasswordLine = logger.logs.find((l) => l.indexOf("WRITE_PASSWORD") === 0);
+    expect(writePasswordLine).toBeDefined();
+    expect(writePasswordLine).not.toMatch(/建議/);
   });
 });

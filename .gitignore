@@ -13,3 +13,6 @@ node_modules/
 
 # 測試/覆蓋率輸出
 coverage/
+
+# /mycr 深度掃描報告——可能包含程式弱點細節，不該進版控
+.mycr/

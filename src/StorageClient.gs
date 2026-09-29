@@ -8,7 +8,7 @@ function storageFetch_(url, params, errorLabel) {
   var code = response.getResponseCode();
   var text = response.getContentText();
   if (code >= 400) {
-    throw new Error('Supabase Storage ' + errorLabel + ' error ' + code + ': ' + text);
+    throw markUpstreamError_('Supabase Storage ' + errorLabel + ' error ' + code + ': ' + text, UPSTREAM_ERROR_CATEGORY_DATA_);
   }
   return text;
 }

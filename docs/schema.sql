@@ -230,6 +230,55 @@ $$;
 -- select * from related_articles('11111111-1111-1111-1111-111111111111', 3);
 
 -- ============================================================
+-- 標籤篩選文章列表,篩選/排序/分頁都在 SQL 端完成(mycr F-04 修正,見
+-- docs/specs/spec_tag_filter_pagination.md）：GAS 端 listArticles 原本的
+-- 標籤篩選寫法,是先撈出「同時擁有全部指定標籤」的全部文章 id(沒有上限),
+-- 再把這些 id 全部塞進 Apps Script UrlFetchApp 的網址(2 KB 上限),大約
+-- 42–43 篇符合條件就會超過這個上限而失敗。這裡沿用上面 hybrid_search_
+-- articles 已經有的 tag_filtered 邏輯(AND 語意),不需要全文/語意排序,
+-- 改成依 updated_at 排序,並且真的在 SQL 端 limit/offset——GAS 端因此只
+-- 需要處理「這一頁」的 id 數量(通常是頁面大小,遠低於網址長度會出問題的
+-- 門檻),不用再處理「總共符合條件的文章數」這個沒有上限的數字。
+--
+-- tag_ids 採 AND 語意,跟 hybrid_search_articles 一致:必須同時擁有所有
+-- 指定標籤才會出現在結果中。status_filter/category_id_filter 為 null 時
+-- 不套用該條件,語意對齊 GAS 端 listArticles「沒帶這個篩選條件就不篩」的
+-- 既有行為。tag_ids 沒有預設值(必填)——這個函式只給「真的有標籤篩選」的
+-- 情境用,呼叫端(listArticles)沒有標籤篩選時完全不會呼叫這裡,不需要像
+-- hybrid_search_articles 那樣容忍 tag_ids 是 null/空陣列的情況。
+-- ============================================================
+create or replace function articles_by_tags(
+  tag_ids             uuid[],
+  status_filter       text default null,
+  category_id_filter  uuid default null,
+  lim                 int default 50,
+  off                 int default 0
+)
+returns setof articles
+language sql
+as $$
+  select a.*
+  from articles a
+  where a.id in (
+    select article_id from article_tags
+    where tag_id = any(tag_ids)
+    group by article_id
+    having count(distinct tag_id) = array_length(tag_ids, 1)
+  )
+  and (status_filter is null or a.status = status_filter)
+  and (category_id_filter is null or a.category_id = category_id_filter)
+  order by a.updated_at desc
+  limit lim
+  offset off
+$$;
+
+-- 使用範例:
+-- select * from articles_by_tags(
+--   array['11111111-1111-1111-1111-111111111111']::uuid[],
+--   'published', null, 50, 0
+-- );
+
+-- ============================================================
 -- 附件資料夾分類(attachment-folders/01)——使用者自訂分組,跟附件既有的
 -- 型態分類(code/photo/zip/...)正交、疊加使用。資料夾綁在單一篇文章底下
 -- (不是跨文章共用的獨立附件庫),所以用 article_id 當作 unique 範圍,而不是
@@ -248,3 +297,47 @@ create index on attachment_folders (article_id);
 
 alter table attachments
   add column folder_id uuid references attachment_folders(id) on delete set null;
+
+-- ============================================================
+-- Row Level Security(縱深防禦,不是這個 app 的主要防線——2026-09 補記)
+-- 這個 app 的架構是 GAS 後端專用 service_role key 存取 Supabase(繞過
+-- RLS),前端從來不直接呼叫 Supabase、不會用到 anon/publishable key,所以
+-- RLS 開不開,對現在這個 app 的任何功能都沒有影響。
+--
+-- 這裡還是把 RLS 打開、刻意不建立任何 policy——Supabase 對「RLS 打開但
+-- 沒有 policy」的表,預設就是對 anon/authenticated 角色全部拒絕讀寫,
+-- service_role 不受影響、完全不受這裡任何設定牽動。成本是 0(不影響現有
+-- 任何功能),換到的是一層縱深防禦:以後如果不小心把 anon key 貼到某個
+-- 地方(例如之後加一個直接呼叫 Supabase 的客戶端功能、或金鑰不小心外流),
+-- 這層防線能擋住用 anon key 讀寫任何一張表,不會直接變成整個資料庫對外
+-- 開放讀寫。
+--
+-- 這不是「已經足夠」的資安措施,只是「反正不花任何成本,不如打開」——真正
+-- 的防線還是「service_role key 只存在 Script Properties、只有 GAS 後端
+-- 碰得到」這件事本身,以及 Storage bucket 有沒有設成 private(見 README
+-- 「建立 Supabase 專案」那步的說明;bucket 的 public/private 不是這份
+-- schema.sql 管得到的設定,需要在 Supabase 的 Storage 頁面自己核對)。
+-- ============================================================
+alter table categories enable row level security;
+alter table tags enable row level security;
+alter table articles enable row level security;
+alter table article_tags enable row level security;
+alter table attachments enable row level security;
+alter table attachment_folders enable row level security;
+
+-- ============================================================
+-- 索引修正:articles_title_trgm_idx/articles_content_trgm_idx 各自只蓋
+-- title/content_md 單一欄位,但上面 hybrid_search_articles 的全文檢索比對
+-- 的是 title || ' ' || content_md 串接後的運算式,兩個單欄位索引都用不上
+-- ——用 EXPLAIN ANALYZE 對真實資料實測確認過是 Seq Scan,不是規劃器選擇
+-- 不用,是根本沒有能用的索引(mycr 全新複掃第二輪 Finding 4)。既有的
+-- 兩個索引也沒有被其他任何查詢用到,留著純粹是寫入時的維護成本,一併清掉。
+-- 換成一個直接涵蓋這個串接運算式的索引,不需要改 hybrid_search_articles
+-- 函式本身、也不需要動任何 GAS 端程式碼。
+-- ============================================================
+drop index if exists articles_title_trgm_idx;
+drop index if exists articles_content_trgm_idx;
+
+create index articles_title_content_trgm_idx
+  on articles
+  using gin ((title || ' ' || content_md) gin_trgm_ops);
