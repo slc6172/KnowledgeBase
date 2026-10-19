@@ -10,23 +10,26 @@ var TEXT_PREVIEW_MAX_BYTES_ = 1 * 1024 * 1024;
 // 問題修復紀錄)。
 var ATTACHMENT_UPLOAD_MAX_BYTES_ = 20 * 1024 * 1024;
 
-/**
- * 從檔名取出副檔名(不含點),沒有副檔名時回傳空字串。
- */
-function fileExtension_(fileName) {
-  var parts = fileName.split('.');
-  return parts.length > 1 ? parts.pop() : '';
-}
+// articles.id 是 uuid 欄位。articleId 會被直接串進 Storage 物件鍵(網址路徑的第一段),
+// 所以在送出任何請求之前就先驗證格式——不是 UUID 的值遲早會在資料庫 insert 時被拒絕,
+// 但那時 Storage 已經寫入了一個物件,還得再補償刪除;提早擋下可以省掉兩個請求,
+// 也讓 .. / ? / # 之類的字元完全進不到網址裡(mycr F-06)。
+var ARTICLE_ID_PATTERN_ = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function uploadAttachmentFile_(articleId, fileName, base64Data, mimeType, folderId) {
+  if (typeof articleId !== 'string' || !ARTICLE_ID_PATTERN_.test(articleId)) {
+    throw new Error('文章 ID 格式不正確,無法上傳附件');
+  }
   var bytes = Utilities.base64Decode(base64Data);
   if (bytes.length > ATTACHMENT_UPLOAD_MAX_BYTES_) {
     throw new Error(
       '檔案過大(上限 ' + (ATTACHMENT_UPLOAD_MAX_BYTES_ / 1024 / 1024) + 'MB),無法上傳: ' + fileName
     );
   }
-  // Storage 路徑刻意不放原始檔名(可能含中文/特殊字元)——只用 uuid + 副檔名,
-  // 純 ASCII、不需要任何編碼處理,徹底避開中文檔名在 URL 路徑裡的編碼問題。
+  // Storage 路徑刻意不放原始檔名(可能含中文/特殊字元)——只用 uuid + 副檔名。
+  // fileExtension_ 保證副檔名只含 1–10 個英數字元(否則視為沒有副檔名),加上上面
+  // 驗證過的 UUID 文章 id,整條路徑因此一定是純 ASCII 的安全字元(mycr F-06);
+  // storage 函式另外對每一段做 URL 編碼,是第二道防線。
   // 原始檔名(含中文)完整保留在下面的 file_name 欄位,存在 DB 裡沒有編碼疑慮。
   var ext = fileExtension_(fileName);
   var path = articleId + '/' + Utilities.getUuid() + (ext ? '.' + ext : '');

@@ -1,0 +1,10 @@
+# Supabase CLI 設定(只放本專案需要的部分;`supabase init` 產生的其他預設值不需要)。
+# project_id 只用於本機開發容器命名,與雲端專案無關。
+project_id = "gas-supabase-knowledge-base"
+
+# kb-proxy 以自訂共用密鑰(X-KB-Proxy-Secret)授權,不是 Supabase 使用者 JWT。
+# 平台內建的 verify_jwt 只認 JWT,新版 API key(sb_secret_...)不是 JWT,
+# 專案本身也沒有 Supabase Auth——預設值 true 會讓 GAS 的每個請求都被平台 401 擋下。
+# 明確寫在設定檔而不是只靠 `--no-verify-jwt` 旗標,避免日後重新部署忘了帶旗標而還原。
+[functions.kb-proxy]
+verify_jwt = false

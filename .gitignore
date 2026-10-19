@@ -16,3 +16,15 @@ coverage/
 
 # /mycr 深度掃描報告——可能包含程式弱點細節，不該進版控
 .mycr/
+
+# Supabase CLI 本地檔案——`supabase link` 會在 .temp/ 寫入專案 ref 與連線資訊,
+# 每個人的連結目標不同,不該共用/進版控。supabase/config.toml 與 functions/ 要提交。
+supabase/.temp/
+supabase/.branches/
+
+# 環境變數檔——可能存放密鑰(例如本機測試用的 EDGE_PROXY_SECRET),絕不能進版控。
+# 實際的密鑰只放在 Supabase 的 Edge Function secrets 與 GAS 的 Script Properties。
+.env
+.env.*
+supabase/.env
+supabase/.env.*

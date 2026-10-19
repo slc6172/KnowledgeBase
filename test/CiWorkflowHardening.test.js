@@ -113,3 +113,72 @@ describe('Dependabot 設定', function () {
     expect(text).toMatch(/dependency-name:\s*["']?dompurify["']?/);
   });
 });
+
+describe('CI workflow 會執行 kb-proxy 的 Deno 測試,且不破壞既有加固', function () {
+  test('安裝 Deno 用的是 denoland/setup-deno,且釘在完整 commit SHA 與精確的 Deno 版本', function () {
+    var text = readWorkflowText();
+
+    expect(text).toMatch(/uses:\s*denoland\/setup-deno@[0-9a-f]{40}\b/);
+    // 精確版本(不用 v2.x 這類會浮動的範圍):跟 Jest 依賴鎖精確版本是同一個理由。
+    expect(text).toMatch(/deno-version:\s*['"]?\d+\.\d+\.\d+['"]?/);
+  });
+
+  test('有 deno test 步驟,指向代理函式目錄', function () {
+    expect(readWorkflowText()).toMatch(/run:\s*deno test\s+supabase\/functions\/kb-proxy\/?\s*$/m);
+  });
+
+  test('Deno 步驟不使用任何遠端匯入旗標(不放寬網路或權限)', function () {
+    var text = readWorkflowText();
+
+    expect(text).not.toMatch(/--allow-net|--allow-all|-A\b|--allow-import|--unstable/);
+  });
+
+  test('Node / Jest 流程維持不變', function () {
+    var text = readWorkflowText();
+
+    expect(text).toMatch(/run:\s*npm ci/);
+    expect(text).toMatch(/run:\s*npm test/);
+  });
+});
+
+// mycr F-17:CI 衛生。沒有逾時的 job 在卡住時會一路跑到平台預設的 6 小時;
+// 沒有快取的 npm ci 每次都重新下載全部相依。
+describe('CI workflow 有逾時上限與 npm 快取', function () {
+  test('job 宣告 timeout-minutes,且在合理範圍內(1–30 分鐘)', function () {
+    var match = readWorkflowText().match(/^\s+timeout-minutes:\s*(\d+)\s*$/m);
+
+    expect(match).not.toBeNull();
+    expect(Number(match[1])).toBeGreaterThanOrEqual(1);
+    expect(Number(match[1])).toBeLessThanOrEqual(30);
+  });
+
+  test('actions/setup-node 啟用 npm 快取,且仍然鎖在 commit SHA', function () {
+    var text = readWorkflowText();
+    var setupNode = text.slice(text.indexOf('actions/setup-node@'));
+
+    expect(setupNode).toMatch(/^\s+cache:\s*['"]?npm['"]?\s*$/m);
+    expect(text).toMatch(/uses:\s*actions\/setup-node@[0-9a-f]{40}\b/);
+  });
+});
+
+// spec_chunked_embeddings 票 01:SQL 整合測試在 CI 真的跑(對 pgvector 服務容器),而不是在 CI 全部被跳過。
+describe('CI workflow 有 pgvector 服務容器,並把 TEST_DATABASE_URL 交給 npm test', function () {
+  test('宣告 postgres 服務容器,使用 pgvector 官方映像的 pg16 版本,並有健康檢查', function () {
+    var text = readWorkflowText();
+
+    expect(text).toMatch(/^\s+services:\s*$/m);
+    expect(text).toMatch(/^\s+image:\s*pgvector\/pgvector:pg16\s*$/m);
+    expect(text).toMatch(/--health-cmd\s+"pg_isready/);
+  });
+
+  test('測試步驟帶有 TEST_DATABASE_URL,指向服務容器', function () {
+    var text = readWorkflowText();
+    var npmTest = text.slice(text.indexOf('- run: npm test'));
+
+    expect(npmTest).toMatch(/TEST_DATABASE_URL:\s*postgres:\/\/\w+:\w+@localhost:5432\/\w+/);
+  });
+
+  test('容器的帳密只是用完即丟的測試值,workflow 裡沒有引用任何 secrets', function () {
+    expect(readWorkflowText()).not.toMatch(/\$\{\{\s*secrets\./);
+  });
+});

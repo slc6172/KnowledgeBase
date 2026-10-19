@@ -24,6 +24,60 @@ var SEMANTIC_SEARCH_RATE_LIMIT_WINDOW_SECONDS_ = 60;
 // 變數方便之後依實際用量調整。
 var SEARCH_QUERY_MAX_LENGTH_ = 1000;
 
+// 查詢向量快取(spec_rag_excerpts.md,mycr 第五輪 F-08):搜尋時前端會先發文章列表、
+// 再發 AI 問答,兩者是同一句查詢;快取讓第二個請求直接取用第一個算好的向量,
+// 一次搜尋只花一次 Gemini 嵌入額度與一次語意搜尋節流計數。
+// 存活 60 秒:夠涵蓋「列表 → AI」的間隔,又不會讓換模型後的舊向量留太久。
+// 快取是「最佳化而不是依賴」——讀寫的任何例外都吞掉、退回照舊呼叫 Gemini。
+var QUERY_EMBEDDING_CACHE_PREFIX_ = 'qemb_';
+var QUERY_EMBEDDING_CACHE_TTL_SECONDS_ = 60;
+
+/**
+ * 快取鍵 = 前綴 + SHA-256(模型識別字串 + 換行 + 修剪過的查詢文字) 的十六進位。
+ * 鍵是雜湊,查詢明文不會出現在快取鍵裡(快取是全站共用的);
+ * 把模型識別字串放進雜湊,換模型時舊快取自然失效,不會拿舊模型的向量去比對新模型的段落。
+ */
+function queryEmbeddingCacheKey_(queryText) {
+  var digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    EMBEDDING_MODEL_ID_ + '\n' + queryText.trim(),
+    Utilities.Charset.UTF_8
+  );
+  var hex = digest
+    .map(function (b) {
+      // computeDigest 回傳有號位元組(-128..127),先換成 0..255 再轉十六進位
+      var value = b < 0 ? b + 256 : b;
+      return (value < 16 ? '0' : '') + value.toString(16);
+    })
+    .join('');
+  return QUERY_EMBEDDING_CACHE_PREFIX_ + hex;
+}
+
+/** 讀快取;沒命中、內容不對、或任何例外一律回傳 null。 */
+function readQueryEmbeddingCache_(queryText) {
+  try {
+    var cached = CacheService.getScriptCache().get(queryEmbeddingCacheKey_(queryText));
+    if (!cached) return null;
+    var vector = JSON.parse(cached);
+    return Array.isArray(vector) && vector.length === EMBEDDING_DIMENSIONS_ ? vector : null;
+  } catch (ignored) {
+    return null;
+  }
+}
+
+/** 寫快取;任何例外(含值過大)都吞掉。 */
+function writeQueryEmbeddingCache_(queryText, vector) {
+  try {
+    CacheService.getScriptCache().put(
+      queryEmbeddingCacheKey_(queryText),
+      JSON.stringify(vector),
+      QUERY_EMBEDDING_CACHE_TTL_SECONDS_
+    );
+  } catch (ignored) {
+    // 快取只是最佳化:寫不進去,下一次照舊呼叫 Gemini 即可
+  }
+}
+
 function checkSemanticSearchRateLimit_() {
   var cache = CacheService.getScriptCache();
   var windowKey =
@@ -36,9 +90,58 @@ function checkSemanticSearchRateLimit_() {
   cache.put(windowKey, String(current + 1), SEMANTIC_SEARCH_RATE_LIMIT_WINDOW_SECONDS_);
 }
 
+/**
+ * 記錄降級原因(含錯誤分類與訊息)。上游錯誤訊息是 Gemini 的原始回應本文,理論上
+ * 不該含金鑰,但這裡仍把金鑰字串遮蔽掉再寫入——日誌可能被貼出去求助,多一層防護成本很低。
+ */
+function logSearchDegradation_(err) {
+  var message = String((err && err.message) || err);
+  try {
+    var apiKey = getConfig_().geminiApiKey;
+    if (apiKey) message = message.split(apiKey).join('[已遮蔽]');
+  } catch (ignored) {
+    // 設定本身讀不到時沒有金鑰可遮蔽,照常記錄即可
+  }
+  var category = (err && err.upstreamCategory_) || 'other';
+  Logger.log('[searchArticles] 語意搜尋降級為關鍵字比對(' + category + '): ' + message);
+}
+
+/**
+ * 公開的搜尋進入點。回傳 { articles, degraded }:
+ * - articles:依相關性排序的文章陣列(形狀同過去直接回傳的陣列)
+ * - degraded:布林,語意搜尋暫時不可用、只回傳關鍵字比對結果時為 true
+ *
+ * 為什麼是物件而不是「在陣列上掛屬性」:google.script.run 序列化時會丟掉
+ * 附加在陣列上的非索引屬性,前端永遠讀不到。
+ */
 function searchArticles(queryText, opts) {
+  var result = searchArticlesInternal_(queryText, opts, true);
+  // matchedChunk(命中段落,每篇最多約 1,500 字)是內部給 AI 問答用的資料,前端不需要,
+  // 不值得讓每篇文章多帶這一大段;只有內部呼叫者(searchArticlesInternal_)拿得到。
+  return {
+    articles: result.articles.map(function (article) {
+      var copy = {};
+      Object.keys(article).forEach(function (key) {
+        if (key !== 'matchedChunk') copy[key] = article[key];
+      });
+      return copy;
+    }),
+    degraded: result.degraded
+  };
+}
+
+/**
+ * 檢索主體。allowDegrade 決定「產生查詢向量失敗」時要不要降級成只用關鍵字:
+ * 公開搜尋允許;askKnowledgeBase 不允許(RAG 拿到品質低落的關鍵字結果會產生
+ * 誤導性的答案,寧可如實報錯)。函式名稱帶底線,不會成為 google.script.run 端點。
+ */
+function searchArticlesInternal_(queryText, opts, allowDegrade, skipPublicReadRateLimit) {
   return withSafeErrors_('searchArticles', function () {
-    checkPublicReadRateLimit_();
+    // skipPublicReadRateLimit 是「第四個內部參數」,只有伺服器內部程式碼(askKnowledgeBase)
+    // 會傳 true;**絕不能改成從 opts 讀取**——searchArticles 是匿名訪客可呼叫的公開函式,
+    // opts 完全由呼叫端控制,開關放在 opts 裡等於任何人傳 { skipPublicReadRateLimit: true }
+    // 就能繞過公開讀取額度(有測試守住)。AI 問答本來就要寫入密碼,不該去消耗匿名訪客共用的額度。
+    if (skipPublicReadRateLimit !== true) checkPublicReadRateLimit_();
     opts = opts || {};
     if (!queryText || !queryText.trim()) {
       throw new Error('請提供搜尋文字');
@@ -46,9 +149,28 @@ function searchArticles(queryText, opts) {
     if (queryText.length > SEARCH_QUERY_MAX_LENGTH_) {
       throw new Error('搜尋文字過長(上限 ' + SEARCH_QUERY_MAX_LENGTH_ + ' 字),請縮短後再試');
     }
-    checkSemanticSearchRateLimit_();
 
-    var embedding = generateEmbedding_(queryText);
+    // 降級範圍刻意只包住「產生查詢向量」這一個呼叫:Hybrid Search 的關鍵字(pg_trgm)
+    // 那一半不需要向量,Gemini 掛掉(配額 429、5xx、逾時、金鑰缺漏/失效)不該讓整個
+    // 搜尋跟著壞掉。這裡抓「任何」錯誤而不只是 HTTP 錯誤——金鑰設錯如果讓搜尋整個
+    // 壞掉,團隊完全無法使用;安靜降級的話擁有者又永遠不知道金鑰壞了,所以前端提示
+    // 一律顯示、原因寫進日誌。空向量之後的任何錯誤(RPC、補資料)都不降級,照舊拋出。
+    var embedding = readQueryEmbeddingCache_(queryText);
+    var degraded = false;
+    if (!embedding) {
+      // 節流只在「快取沒命中、真的要呼叫 Gemini 之前」計數:快取命中不花 Gemini 額度,
+      // 所以不佔節流。這個檢查刻意放在降級的 try 外面——節流拒絕要如實報錯,不能降級。
+      checkSemanticSearchRateLimit_();
+      try {
+        embedding = generateEmbedding_(queryText);
+        writeQueryEmbeddingCache_(queryText, embedding);
+      } catch (embeddingErr) {
+        if (!allowDegrade) throw embeddingErr;
+        degraded = true;
+        embedding = null;
+        logSearchDegradation_(embeddingErr);
+      }
+    }
 
     // tag_ids 去重後才送進 hybrid_search_articles RPC——這個 RPC 內部用
     // `having count(distinct tag_id) = array_length(tag_ids, 1)` 判斷
@@ -60,7 +182,7 @@ function searchArticles(queryText, opts) {
     var rpcArgs = {
       query_text: queryText,
       query_embedding: embedding,
-      tag_ids: uniqueValues_(opts.tagIds || [])
+      tag_ids: uniqueValues_(normalizeTagIds_(opts.tagIds))
     };
     if (opts.matchCount !== undefined) rpcArgs.match_count = opts.matchCount;
     if (opts.onlyPublished !== undefined) rpcArgs.only_published = opts.onlyPublished;
@@ -73,9 +195,10 @@ function searchArticles(queryText, opts) {
 
     var rankedRows = supabaseRpc_('hybrid_search_articles', rpcArgs);
     if (!rankedRows) {
-      return [];
+      return { articles: [], degraded: degraded };
     }
-    // hybrid_search_articles 應該永遠回傳陣列(setof articles)。如果收到的不是
+    // hybrid_search_articles 應該永遠回傳陣列(table:id、命中段落序號/文字、語意距離;
+    // GAS 只取 id,再另外查詢整列補上分類與標籤)。如果收到的不是
     // 陣列,幾乎都是資料庫端有兩個同名但參數不同的函式版本同時存在,PostgREST
     // 無法判斷要呼叫哪一個、回傳了描述衝突的物件而不是查詢結果——這種情況給出
     // 明確的錯誤訊息,而不是讓後面的 .map 丟出看不出原因的 TypeError。
@@ -89,7 +212,7 @@ function searchArticles(queryText, opts) {
       );
     }
     if (rankedRows.length === 0) {
-      return [];
+      return { articles: [], degraded: degraded };
     }
 
     var orderedIds = rankedRows.map(function (row) {
@@ -106,21 +229,39 @@ function searchArticles(queryText, opts) {
     enrichedRows.forEach(function (row) {
       byId[row.id] = row;
     });
+    // 命中段落:RPC 已回傳每篇最接近查詢的那一段(只被關鍵字命中時三個欄位都是 null)。
+    var chunkById = {};
+    rankedRows.forEach(function (row) {
+      chunkById[row.id] =
+        row.best_chunk_content === null || row.best_chunk_content === undefined
+          ? null
+          : {
+              index: row.best_chunk_index,
+              content: row.best_chunk_content,
+              distance: row.semantic_distance
+            };
+    });
 
-    return orderedIds
+    var articles = orderedIds
       .map(function (id) {
         return byId[id];
       })
       .filter(function (row) {
         return row !== undefined;
       })
-      .map(normalizeArticleRow_);
+      .map(normalizeArticleRow_)
+      .map(function (article) {
+        article.matchedChunk = chunkById[article.id] || null;
+        return article;
+      });
+    return { articles: articles, degraded: degraded };
   });
 }
 
 if (typeof module !== 'undefined') {
   module.exports = {
     searchArticles: searchArticles,
+    searchArticlesInternal_: searchArticlesInternal_,
     SEARCH_QUERY_MAX_LENGTH_: SEARCH_QUERY_MAX_LENGTH_,
     SEMANTIC_SEARCH_RATE_LIMIT_: SEMANTIC_SEARCH_RATE_LIMIT_,
     SEMANTIC_SEARCH_RATE_LIMIT_WINDOW_SECONDS_: SEMANTIC_SEARCH_RATE_LIMIT_WINDOW_SECONDS_

@@ -13,10 +13,10 @@ function storageFetch_(url, params, errorLabel) {
   return text;
 }
 
+// 只送共用密鑰給代理;apikey / Authorization 由代理在上游那一跳自己加。
 function storageAuthHeaders_(config, extra) {
   var headers = {
-    apikey: config.serviceRoleKey,
-    Authorization: 'Bearer ' + config.serviceRoleKey
+    'X-KB-Proxy-Secret': config.edgeProxySecret
   };
   if (extra) {
     for (var key in extra) {
@@ -26,9 +26,19 @@ function storageAuthHeaders_(config, extra) {
   return headers;
 }
 
+// 把 bucket 與物件鍵「每一段」分別做 URL 編碼後再用斜線接起來:斜線只出現在段與段之間,
+// 物件鍵裡的 ? # % 空白 非 ASCII 字元不可能變成 query / fragment / 路徑結構(mycr F-06)。
+// 正常的物件鍵({UUID}/{uuid}.副檔名)全是安全字元,編碼後與原值相同。
+function storageObjectPath_(bucket, path) {
+  return [bucket]
+    .concat(String(path).split('/'))
+    .map(encodeURIComponent)
+    .join('/');
+}
+
 function storageUpload_(bucket, path, bytes, mimeType) {
   var config = getConfig_();
-  var url = config.supabaseUrl + '/storage/v1/object/' + bucket + '/' + path;
+  var url = proxyUrl_(config, 'storage/v1/object/' + storageObjectPath_(bucket, path));
   var text = storageFetch_(
     url,
     {
@@ -46,7 +56,7 @@ function storageUpload_(bucket, path, bytes, mimeType) {
 
 function storageDelete_(bucket, path) {
   var config = getConfig_();
-  var url = config.supabaseUrl + '/storage/v1/object/' + bucket + '/' + path;
+  var url = proxyUrl_(config, 'storage/v1/object/' + storageObjectPath_(bucket, path));
   var text = storageFetch_(
     url,
     {
@@ -61,7 +71,7 @@ function storageDelete_(bucket, path) {
 
 function storageSignedUrl_(bucket, path, expiresInSeconds) {
   var config = getConfig_();
-  var url = config.supabaseUrl + '/storage/v1/object/sign/' + bucket + '/' + path;
+  var url = proxyUrl_(config, 'storage/v1/object/sign/' + storageObjectPath_(bucket, path));
   var text = storageFetch_(
     url,
     {
@@ -73,12 +83,14 @@ function storageSignedUrl_(bucket, path, expiresInSeconds) {
     'sign'
   );
   var body = JSON.parse(text);
+  // 簽名 URL 是給瀏覽器直連 Supabase Storage 的(token 已內含於 URL),
+  // 所以刻意用公開專案網址、不經代理。
   return config.supabaseUrl + '/storage/v1' + body.signedURL;
 }
 
 function storageDownload_(bucket, path) {
   var config = getConfig_();
-  var url = config.supabaseUrl + '/storage/v1/object/' + bucket + '/' + path;
+  var url = proxyUrl_(config, 'storage/v1/object/' + storageObjectPath_(bucket, path));
   return storageFetch_(
     url,
     {

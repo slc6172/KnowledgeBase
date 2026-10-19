@@ -267,6 +267,10 @@
     return text.slice(0, maxLen) + '…';
   }
 
+  function setSearchDegradedNotice(visible) {
+    document.getElementById('search-degraded-notice').classList.toggle('hidden', !visible);
+  }
+
   function setSearchBusy(isBusy) {
     var btn = document.getElementById('btn-search');
     btn.disabled = isBusy;
@@ -277,13 +281,18 @@
   var selectedArticleIds = {};
   var currentListArticles = [];
 
-  function renderArticleCards(articles) {
+  function renderArticleCards(articles, emptyMessage) {
     var container = document.getElementById('article-list-results');
     container.innerHTML = '';
     currentListArticles = articles || [];
 
     if (!articles || articles.length === 0) {
-      container.innerHTML = '<p class="empty-state">沒有符合的文章。</p>';
+      // emptyMessage 是呼叫端給的固定文字(目前只有降級搜尋用),不是使用者資料;
+      // 用 textContent 設定,不拼進 innerHTML。
+      var empty = document.createElement('p');
+      empty.className = 'empty-state';
+      empty.textContent = emptyMessage || '沒有符合的文章。';
+      container.appendChild(empty);
       return;
     }
 
@@ -457,6 +466,7 @@
   function loadArticleList() {
     setSearchBusy(true);
     hideAiAnswerPanel();
+    setSearchDegradedNotice(false); // 回到一般列表模式,上一次搜尋的降級提示不該殘留
     var seq = ++articleResultsRequestSeq_;
     var statusFilter = getSelectedStatusFilter();
     var categoryFilter = getSelectedCategoryFilter();
@@ -487,6 +497,9 @@
   function performSearch(queryText) {
     setSearchBusy(true);
     hideArticleListPager();
+    // 新搜尋一開始就先清除提示:不等回應,避免回應還沒到時畫面上仍掛著上一次的降級提示。
+    // 要不要再顯示,由「序號仍是最新」的成功處理決定(過期回應完全不碰提示)。
+    setSearchDegradedNotice(false);
     var seq = ++articleResultsRequestSeq_;
     var statusFilter = getSelectedStatusFilter();
     var categoryFilter = getSelectedCategoryFilter();
@@ -501,9 +514,13 @@
     if (tagFilter.length > 0) searchOpts.tagIds = tagFilter;
 
     google.script.run
-      .withSuccessHandler(function (articles) {
+      .withSuccessHandler(function (result) {
         if (seq !== articleResultsRequestSeq_) return; // 已經有更新的請求,這個回應過期了
         setSearchBusy(false);
+        // 回傳形狀是 { articles, degraded }(不是陣列:google.script.run 會丟掉掛在
+        // 陣列上的屬性)。degraded 為真代表語意搜尋暫時不可用、只有關鍵字比對結果。
+        var articles = result.articles;
+        var degraded = result.degraded === true;
         var filtered = articles;
         if (statusFilter === 'draft') {
           filtered = filtered.filter(function (a) { return a.status === 'draft'; });
@@ -511,20 +528,33 @@
         if (categoryFilter) {
           filtered = filtered.filter(function (a) { return a.category_id === categoryFilter; });
         }
-        renderArticleCards(filtered);
+        setSearchDegradedNotice(degraded);
+        // 降級時「沒找到」不代表知識庫裡沒有,可能只是語意搜尋暫時不可用,
+        // 所以空狀態用專屬訊息,避免使用者誤以為真的沒有相關文章。
+        renderArticleCards(
+          filtered,
+          degraded ? '關鍵字比對沒有找到結果。語意搜尋目前無法使用,稍後再試可能會有更多結果。' : undefined
+        );
+        // 列表處理完才發 AI 問答(見檔案下方 performSearch 結尾的說明)。
+        loadAiAnswer(queryText);
       })
       .withFailureHandler(function (err) {
         if (seq !== articleResultsRequestSeq_) return;
         setSearchBusy(false);
         showError(err.message);
+        // 列表失敗不代表 AI 不能回答(它自己再嘗試產生向量,失敗就顯示既有的錯誤訊息)。
+        loadAiAnswer(queryText);
       })
       .searchArticles(queryText, searchOpts);
 
-    // 跟搜尋結果平行載入,不互相阻塞——搜尋結果列表本身完全不受影響,見
-    // loadAiAnswer 內部對 cachedWritePassword 的判斷。loadAiAnswer 自己有
-    // 獨立的安全機制(每次呼叫重新建立自己專屬的 DOM 元素),不需要、也不
-    // 共用這裡的 articleResultsRequestSeq_。
-    loadAiAnswer(queryText);
+    // AI 問答「不再」跟列表平行發出,而是等列表請求的處理器完成之後才發(成功、失敗都是;
+    // 只有序號仍是最新的請求才會走到——被新搜尋取代的舊請求在上面就 return 了,不會觸發 AI):
+    // 兩個請求是同一句查詢,列表請求會在伺服器端把查詢向量放進快取(Search.gs 的查詢向量快取),
+    // AI 請求隨後直接取用,一次搜尋只花一次 Gemini 嵌入額度與一次語意搜尋節流
+    // (spec_rag_excerpts.md,mycr F-08)。代價是 AI 回答晚一個列表請求的時間(約 1~2 秒)才開始,
+    // 但列表先出現。沒有密碼快取時 loadAiAnswer 自己會直接返回、不發任何請求。
+    // loadAiAnswer 自己有獨立的安全機制(每次呼叫重新建立自己專屬的 DOM 元素),不共用這裡的
+    // articleResultsRequestSeq_。
   }
 
   /**
@@ -573,6 +603,10 @@
 
     google.script.run
       .withSuccessHandler(function (result) {
+        // 這一輪已經不在畫面上(使用者清空了搜尋,或有更新的搜尋把面板換掉了)→ 整個丟棄,
+        // 連同「寫進對話歷史」這一步。每輪都有專屬的 turnEl,只要它還接在文件上,
+        // 就代表這仍然是畫面上的那一輪;不需要另外維護序號(mycr F-07)。
+        if (!turnEl.isConnected) return;
         renderAiAnswerTurn(turnEl, queryText, result);
       })
       .withFailureHandler(function (err) {
@@ -586,6 +620,53 @@
         turnEl.innerHTML = '<p class="empty-state">' + escapeHtml(err.message) + '</p>';
       })
       .askKnowledgeBase(queryText, cachedWritePassword, conversationHistory);
+  }
+
+  /**
+   * 「檢索到的相關文章」面板:原生 <details>,預設收合(不帶 open),展開後是垂直列表。
+   *
+   * 措辭刻意是「檢索到的相關文章」而不是「參考來源」:這些是檢索結果,提示詞並沒有要求
+   * Gemini 標註引用,不能暗示答案是逐篇根據這些文章得出的。每次渲染新一輪回答都重新
+   * 建立面板,所以每次都回到收合,行為一致可預期。
+   *
+   * 標題與分類名稱都是使用者資料,一律用 textContent 設定,不拼進 innerHTML。
+   */
+  function buildAiSourcesPanel(sources) {
+    var panel = document.createElement('details');
+    panel.className = 'ai-sources';
+
+    var summary = document.createElement('summary');
+    summary.className = 'ai-sources__summary';
+    summary.textContent = '檢索到的相關文章(' + sources.length + ')';
+    panel.appendChild(summary);
+
+    var list = document.createElement('div');
+    list.className = 'ai-sources__list';
+    sources.forEach(function (source) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'ai-sources__item';
+
+      var title = document.createElement('span');
+      title.className = 'ai-sources__title';
+      title.textContent = source.title;
+      item.appendChild(title);
+
+      // 未分類時完全不渲染次要文字(也就沒有分隔符),不會出現空白或「null」。
+      if (source.categoryName) {
+        var category = document.createElement('span');
+        category.className = 'ai-sources__category';
+        category.textContent = source.categoryName;
+        item.appendChild(category);
+      }
+
+      item.addEventListener('click', function () {
+        openArticleDetail(source.id);
+      });
+      list.appendChild(item);
+    });
+    panel.appendChild(list);
+    return panel;
   }
 
   function renderAiAnswerTurn(turnEl, queryText, result) {
@@ -613,19 +694,7 @@
     answerEl.innerHTML = renderMarkdownSafe_(result.answer, MD_SANITIZE_CONFIG_AI_);
     turnEl.appendChild(answerEl);
 
-    var sourcesEl = document.createElement('div');
-    sourcesEl.className = 'ai-answer__sources';
-    result.sources.forEach(function (source) {
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ai-answer__source';
-      btn.textContent = source.title;
-      btn.addEventListener('click', function () {
-        openArticleDetail(source.id);
-      });
-      sourcesEl.appendChild(btn);
-    });
-    turnEl.appendChild(sourcesEl);
+    turnEl.appendChild(buildAiSourcesPanel(result.sources));
 
     conversationHistory.push({ question: queryText, answer: result.answer });
     if (conversationHistory.length > HISTORY_RETAIN_TURNS) {
@@ -1281,14 +1350,22 @@
       typeBadge.textContent = att.type;
       row.appendChild(typeBadge);
 
-      if (att.type === 'url') {
+      if (att.type === 'url' && isSafeAttachmentUrl_(att.url)) {
         var link = document.createElement('a');
         link.href = att.url;
         link.target = '_blank';
-        link.rel = 'noopener';
+        link.rel = 'noopener noreferrer';
         link.className = 'attachment-row__label';
         link.textContent = att.file_name || att.url;
         row.appendChild(link);
+      } else if (att.type === 'url') {
+        // 縱深防禦(mycr F-12):資料庫裡的值不是 http(s) 網址時(寫入端本來就會擋,
+        // 這是萬一有漏網的舊資料或新的寫入路徑),只顯示純文字,不產生可點擊的連結。
+        // 附件仍然列出來,擁有者才看得到並刪掉它。
+        var unsafeLabel = document.createElement('span');
+        unsafeLabel.className = 'attachment-row__label';
+        unsafeLabel.textContent = att.file_name || att.url;
+        row.appendChild(unsafeLabel);
       } else {
         var label = document.createElement('span');
         label.className = 'attachment-row__label';

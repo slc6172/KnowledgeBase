@@ -11,10 +11,24 @@ var ATTACHMENT_EXTENSION_MAP_ = {
   odt: 'odf_doc', ods: 'odf_doc', odp: 'odf_doc'
 };
 
+/**
+ * 從檔名取出「可以安全放進 Storage 物件鍵」的副檔名(不含點,保留原本大小寫)。
+ * 只接受 1–10 個英數字元;其他任何情況(沒有點、只有開頭的點、點在最後、含空白 / ? / # /
+ * 斜線 / % / 非 ASCII 字元、超過 10 個字元)一律回傳空字串,也就是「當成沒有副檔名」
+ * ——不拒絕上傳,原始檔名完整保留在資料庫 file_name 欄位。
+ * 類型偵測、上傳 Content-Type 判斷、物件鍵三處共用這一個函式(mycr F-06),
+ * 不安全的副檔名在三處的行為因此一致:未知副檔名 → code / application/octet-stream。
+ */
+function fileExtension_(fileName) {
+  var name = String(fileName);
+  var dot = name.lastIndexOf('.');
+  if (dot <= 0) return '';
+  var ext = name.slice(dot + 1);
+  return /^[A-Za-z0-9]{1,10}$/.test(ext) ? ext : '';
+}
+
 function detectAttachmentType_(fileName) {
-  var parts = fileName.split('.');
-  var ext = parts.length > 1 ? parts.pop().toLowerCase() : '';
-  return ATTACHMENT_EXTENSION_MAP_[ext] || 'code';
+  return ATTACHMENT_EXTENSION_MAP_[fileExtension_(fileName).toLowerCase()] || 'code';
 }
 
 /**
@@ -54,13 +68,12 @@ var ATTACHMENT_SAFE_CONTENT_TYPES_ = {
 };
 
 function resolveUploadContentType_(fileName) {
-  var parts = fileName.split('.');
-  var ext = parts.length > 1 ? parts.pop().toLowerCase() : '';
-  return ATTACHMENT_SAFE_CONTENT_TYPES_[ext] || 'application/octet-stream';
+  return ATTACHMENT_SAFE_CONTENT_TYPES_[fileExtension_(fileName).toLowerCase()] || 'application/octet-stream';
 }
 
 if (typeof module !== 'undefined') {
   module.exports = {
+    fileExtension_: fileExtension_,
     detectAttachmentType_: detectAttachmentType_,
     resolveUploadContentType_: resolveUploadContentType_
   };

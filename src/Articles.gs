@@ -11,17 +11,59 @@ function findOrCreateTag_(name) {
   return inserted[0];
 }
 
-function syncArticleTags_(articleId, tagNames) {
-  var tagIds = tagNames.map(function (name) {
+// 標籤名稱 → 標籤 ID(不存在就先建立)。建立標籤本身是獨立、冪等的動作:
+// 萬一之後的 save_article 失敗,殘留的只是一個沒有文章引用的標籤,無害。
+function resolveTagIds_(tagNames) {
+  return tagNames.map(function (name) {
     return findOrCreateTag_(name).id;
   });
-  supabaseDelete_('article_tags', eqFilter_('article_id', articleId));
-  if (tagIds.length > 0) {
-    var rows = tagIds.map(function (tagId) {
-      return { article_id: articleId, tag_id: tagId };
-    });
-    supabaseInsert_('article_tags', rows);
+}
+
+/**
+ * 把文章內容切段並一次算好全部段落的向量(尚未寫入任何東西)。
+ * - 段數超過 CHUNK_MAX_COUNT_ → 在呼叫 Gemini 之前就拒絕(訊息是給使用者看的,說明段數與上限);
+ * - 一個批次 Gemini 請求;失敗時直接往外拋,呼叫端因此不會寫入任何東西
+ *   (沿用 spec_article_write_consistency 的「不部分提交」原則)。
+ * 回傳 { chunks: [{content, embedding}], model }。
+ */
+function prepareArticleChunks_(title, contentMd) {
+  var chunks = splitIntoChunks_(contentMd);
+  if (exceedsChunkLimit_(chunks)) {
+    throw new Error(
+      '這篇文章太長(切成 ' + chunks.length + ' 段,上限 ' + CHUNK_MAX_COUNT_ + ' 段,約 6 萬字),無法發布。' +
+        '請拆成多篇,或縮短內容;草稿不受這個限制。'
+    );
   }
+  var vectors = generateEmbeddingsBatch_(
+    chunks.map(function (chunk) {
+      return buildChunkEmbeddingText_(title, chunk);
+    })
+  );
+  return {
+    chunks: chunks.map(function (chunk, i) {
+      return { content: chunk, embedding: vectors[i] };
+    }),
+    model: EMBEDDING_MODEL_ID_
+  };
+}
+
+/**
+ * 所有文章寫入的唯一出口:一個 save_article 請求,文章欄位、狀態、全部段落、標籤集合在資料庫的
+ * 單一交易內一起寫,任何一步失敗整筆回滾(docs/specs/spec_chunked_embeddings.md)。
+ * 各部分都是可選的:沒給的就不帶,資料庫端視為「不動」。
+ * 回傳資料庫儲存後的文章列(PostgREST 對單一 composite 回傳物件;保險起見也接受單元素陣列)。
+ */
+function saveArticleRpc_(articleId, fields, tagIds, prepared) {
+  var args = {};
+  if (articleId) args.p_id = articleId;
+  if (fields) args.p_fields = fields;
+  if (tagIds !== undefined) args.p_tag_ids = tagIds;
+  if (prepared) {
+    args.p_chunks = prepared.chunks;
+    args.p_embedding_model = prepared.model;
+  }
+  var result = supabaseRpc_('save_article', args);
+  return Array.isArray(result) ? result[0] : result;
 }
 
 function normalizeArticleRow_(row) {
@@ -66,18 +108,54 @@ function createArticle_(data) {
   if (!data.title || String(data.title).trim() === '') {
     throw new Error('文章標題不能是空白');
   }
-  var row = {
-    title: data.title,
-    content_md: data.content_md,
-    category_id: data.category_id || null,
-    status: 'draft'
-  };
-  var inserted = supabaseInsert_('articles', [row]);
-  var article = inserted[0];
-  if (data.tag_names && data.tag_names.length > 0) {
-    syncArticleTags_(article.id, data.tag_names);
-  }
-  return getArticleRowInternal_(article.id);
+  var tagIds = data.tag_names && data.tag_names.length > 0 ? resolveTagIds_(data.tag_names) : undefined;
+  var saved = saveArticleRpc_(
+    null,
+    {
+      title: data.title,
+      content_md: data.content_md,
+      category_id: data.category_id || null,
+      status: 'draft'
+    },
+    tagIds,
+    null
+  );
+  return getArticleRowInternal_(saved.id);
+}
+
+// 公開讀取函式(匿名訪客可呼叫)對分頁參數的範圍(mycr F-13)。
+// 前端頁面大小是 20,tag 篩選測試用過 100;上限 100 足夠且不會截斷任何現行用法。
+var LIST_LIMIT_DEFAULT_ = 50;
+var LIST_LIMIT_MAX_ = 100;
+var LIST_OFFSET_MAX_ = 100000;
+
+/**
+ * 把呼叫端傳來的 limit 正規化成 1–LIST_LIMIT_MAX_ 的整數:
+ * 無法轉成有限數字、或小於 1 → 預設值;小數無條件捨去;超過上限 → 夾到上限。
+ * (Number() 的結果保證是數字,所以不可能把原始字串組進網址,見下方 listArticles 的註解。)
+ */
+function normalizeListLimit_(raw) {
+  var n = Number(raw);
+  if (!isFinite(n) || n < 1) return LIST_LIMIT_DEFAULT_;
+  return Math.min(Math.floor(n), LIST_LIMIT_MAX_);
+}
+
+/**
+ * offset 只接受正整數(夾到 LIST_OFFSET_MAX_);其他任何值 → 0,也就是不帶 offset。
+ * 夾住上限是因為 1e21 這類大數字轉成字串會變成 "1e+21",PostgREST 會回 400。
+ */
+function normalizeListOffset_(raw) {
+  var n = Number(raw);
+  if (!isFinite(n) || n < 1 || Math.floor(n) !== n) return 0;
+  return Math.min(n, LIST_OFFSET_MAX_);
+}
+
+/**
+ * tagIds 必須是陣列才有意義;其他型別(字串、物件、數字…)視為「沒有標籤篩選」,
+ * 而不是讓 uniqueValues_ 對它呼叫 .forEach 丟出原始 TypeError 給匿名訪客。
+ */
+function normalizeTagIds_(raw) {
+  return Array.isArray(raw) ? raw : [];
 }
 
 function listArticles(opts) {
@@ -86,13 +164,12 @@ function listArticles(opts) {
     opts = opts || {};
 
     // limit/offset 語意上不是過濾條件，不能套用 eqFilter_，但一樣是呼叫端可控值，
-    // 字串相加組進 URL 有一樣的注入風險（細節見 README 已知問題修復紀錄）。強制
-    // 轉成 Number：轉換失敗（非數字字串、undefined）會得到 NaN，NaN 是 falsy，
-    // 落回預設值/跳過，順便處理了「傳入非數字」這個原本沒管的邊界情況。
-    var limit = Number(opts.limit) || 50;
-    var offset = Number(opts.offset);
+    // 字串相加組進 URL 有一樣的注入風險（細節見 README 已知問題修復紀錄）。兩者都經過
+    // 上面的正規化:結果一定是範圍內的數字，非數字/超出範圍的輸入落回預設值或夾住。
+    var limit = normalizeListLimit_(opts.limit);
+    var offset = normalizeListOffset_(opts.offset);
 
-    if (opts.tagIds && opts.tagIds.length > 0) {
+    if (normalizeTagIds_(opts.tagIds).length > 0) {
       return listArticlesByTags_(opts, limit, offset);
     }
 
@@ -122,7 +199,7 @@ function listArticles(opts) {
  * 會出問題的門檻），不會再跟著「總共符合條件的文章數」一起變大。
  */
 function listArticlesByTags_(opts, limit, offset) {
-  var rpcArgs = { tag_ids: uniqueValues_(opts.tagIds), lim: limit };
+  var rpcArgs = { tag_ids: uniqueValues_(normalizeTagIds_(opts.tagIds)), lim: limit };
   if (opts.status) rpcArgs.status_filter = opts.status;
   if (opts.categoryId) rpcArgs.category_id_filter = opts.categoryId;
   if (offset) rpcArgs.off = offset;
@@ -160,7 +237,7 @@ function uniqueValues_(values) {
 }
 
 function updateArticle_(articleId, data) {
-  var patch = {};
+  var fields = {};
   if (data.title !== undefined) {
     // 同一顆「title 不能空白」的擋法(見 createArticle_ 上方的註解)——這裡是
     // 「使用者主動把標題清空」的情況,跟「呼叫端根本沒帶 title」(data.title
@@ -168,34 +245,31 @@ function updateArticle_(articleId, data) {
     if (!data.title || String(data.title).trim() === '') {
       throw new Error('文章標題不能是空白');
     }
-    patch.title = data.title;
+    fields.title = data.title;
   }
-  if (data.content_md !== undefined) patch.content_md = data.content_md;
-  if (data.category_id !== undefined) patch.category_id = data.category_id;
+  if (data.content_md !== undefined) fields.content_md = data.content_md;
+  if (data.category_id !== undefined) fields.category_id = data.category_id;
 
+  // 這次編輯有碰到標題或內文,而且文章目前是已發布 → 要重新切段、重新算全部段落的向量。
+  // 必須在任何寫入發生之前就先知道文章是不是已發布、並把向量算好——Gemini 失敗時直接往外拋,
+  // 資料庫完全沒被動到,連「新標籤」都還沒建立(沿用 spec_article_write_consistency 的原則,
+  // 也就是 mycr F-01 修正)。這次讀取同時是存在性檢查。
+  var prepared = null;
   if (data.title !== undefined || data.content_md !== undefined) {
-    // 這次編輯有碰到標題或內文,一定要先知道文章目前是不是已發布,才能決定要不要
-    // 重新產生 embedding,而且必須在任何寫入發生之前就先知道——不然又會回到
-    // 「先寫入、Gemini 才失敗」的舊問題(mycr F-01 修正,見
-    // docs/specs/spec_article_write_consistency.md)。這次讀取不管文章結果是不是
-    // 已發布都要花,是修正這個問題無法避免的代價;這個讀取同時也是存在性檢查
-    // (文章不存在會在這裡就拋出「找不到文章」,而不是等寫入之後才發現)。
     var current = getArticleRowInternal_(articleId);
     if (current.status === 'published') {
       var mergedTitle = data.title !== undefined ? data.title : current.title;
       var mergedContentMd = data.content_md !== undefined ? data.content_md : current.content_md;
-      // 在碰資料庫之前就先呼叫 Gemini——Gemini 失敗時直接往外拋,這裡完全不會
-      // 執行到下面的 supabaseUpdate_,不會留下「內容已經改了但 embedding 沒更新」
-      // 的部分提交狀態。
-      patch.embedding = generateEmbedding_(mergedTitle + '\n\n' + mergedContentMd);
+      prepared = prepareArticleChunks_(mergedTitle, mergedContentMd);
     }
-    supabaseUpdate_('articles', eqFilter_('id', articleId), patch);
-  } else if (Object.keys(patch).length > 0) {
-    supabaseUpdate_('articles', eqFilter_('id', articleId), patch);
   }
 
-  if (data.tag_names !== undefined) {
-    syncArticleTags_(articleId, data.tag_names);
+  var tagIds = data.tag_names !== undefined ? resolveTagIds_(data.tag_names) : undefined;
+  var hasFields = Object.keys(fields).length > 0;
+  if (hasFields || tagIds !== undefined || prepared) {
+    // 文章欄位、標籤集合、段落全部在這一個請求裡一起生效或一起不生效。
+    // 沒有欄位要改時不帶 p_fields(資料庫端因此不會動到 updated_at)。
+    saveArticleRpc_(articleId, hasFields ? fields : null, tagIds, prepared);
   }
   return getArticleRowInternal_(articleId);
 }
@@ -212,7 +286,16 @@ function deleteArticle_(articleId) {
           storageDelete_('attachments', att.file_path);
         } catch (e) {
           // 單一附件的 Storage 刪除失敗不中斷整個刪除流程——寧可留下一個孤兒
-          // 檔案,也不要卡住使用者刪文章這個動作。
+          // 檔案,也不要卡住使用者刪文章這個動作。但不能靜默:孤兒檔案會一直佔用
+          // Storage 額度,日誌裡留下路徑,事後才有辦法到 Supabase 手動清掉
+          // (與 uploadAttachmentFile_ 補償清理失敗時的記錄方式一致)。
+          Logger.log(
+            '刪除文章時 Storage 檔案刪除失敗,留下孤兒檔案,需要手動處理:attachments/' +
+              att.file_path +
+              '(' +
+              e.message +
+              ')'
+          );
         }
       }
     });
@@ -226,18 +309,17 @@ function setArticleStatus_(articleId, status) {
     throw new Error('status 必須是 draft 或 published');
   }
   if (status === 'published') {
-    // 發布一定會觸發重新產生 embedding,必須在任何寫入發生之前就先讀取目前的
-    // 標題/內文、算好 Gemini 的結果——不然又會回到「狀態已經寫成已發布、
-    // Gemini 才失敗」的舊問題(mycr F-01 修正,見
-    // docs/specs/spec_article_write_consistency.md)。這個內部讀取同時也是
+    // 發布一定會重新切段、重新算全部段落的向量,必須在任何寫入發生之前就先讀取目前的標題/內文、
+    // 算好 Gemini 的結果——不然又會回到「狀態已經寫成已發布、Gemini 才失敗」的舊問題
+    // (mycr F-01 修正,見 docs/specs/spec_article_write_consistency.md)。這個內部讀取同時也是
     // 存在性檢查。
     var current = getArticleRowInternal_(articleId);
-    var embedding = generateEmbedding_(current.title + '\n\n' + current.content_md);
-    supabaseUpdate_('articles', eqFilter_('id', articleId), { status: status, embedding: embedding });
+    var prepared = prepareArticleChunks_(current.title, current.content_md);
+    saveArticleRpc_(articleId, { status: status }, undefined, prepared);
   } else {
-    // 取消發布不涉及 embedding,維持「先寫入、再讀回」的原順序——沒有部分
-    // 提交的風險,不需要重新排序。
-    supabaseUpdate_('articles', eqFilter_('id', articleId), { status: status });
+    // 取消發布只改狀態:段落刻意保留(搜尋與相關文章本來就只看已發布,保留不會被搜到;
+    // 重新發布時整批重算覆蓋,行為與以前一致,也少一個可能寫入失敗的點)。
+    saveArticleRpc_(articleId, { status: status }, undefined, null);
   }
   return getArticleRowInternal_(articleId);
 }
@@ -273,9 +355,8 @@ function batchSetArticlesCategory_(articleIds, categoryId) {
   var failed = [];
   articleIds.forEach(function (id) {
     try {
-      // 不透過 updateArticle——那個函式的 embedding 重新產生判斷式只看
-      // title/content_md,直接更新 category_id 更單純,也不用傳一堆不相關的
-      // undefined 欄位。
+      // 不透過 updateArticle——分類不影響搜尋用的向量(段落向量只取決於標題與內文),
+      // 直接更新 category_id 更單純,也不用傳一堆不相關的 undefined 欄位。
       var updated = supabaseUpdate_('articles', eqFilter_('id', id), { category_id: categoryId });
       if (!updated || updated.length === 0) {
         // PostgREST 對 PATCH 到不存在的 id 不會回錯誤,只會回空陣列——不檢查
@@ -335,9 +416,12 @@ function batchAddTagsToArticles_(articleIds, tagNames) {
 if (typeof module !== 'undefined') {
   module.exports = {
     findOrCreateTag_: findOrCreateTag_,
-    syncArticleTags_: syncArticleTags_,
+    resolveTagIds_: resolveTagIds_,
+    prepareArticleChunks_: prepareArticleChunks_,
+    saveArticleRpc_: saveArticleRpc_,
     normalizeArticleRow_: normalizeArticleRow_,
     uniqueValues_: uniqueValues_,
+    normalizeTagIds_: normalizeTagIds_,
     getArticle: getArticle,
     createArticle_: createArticle_,
     listArticles: listArticles,

@@ -5,7 +5,7 @@ function fakeConfig() {
     getScriptProperties: () => ({
       getProperty: (key) => {
         if (key === "SUPABASE_URL") return "https://x.supabase.co";
-        if (key === "SUPABASE_SERVICE_ROLE_KEY") return "srv-key";
+        if (key === "EDGE_PROXY_SECRET") return "proxy-secret";
         return null;
       }
     })
@@ -17,7 +17,7 @@ function fakeConfigWithGemini() {
     getScriptProperties: () => ({
       getProperty: (key) => {
         if (key === "SUPABASE_URL") return "https://x.supabase.co";
-        if (key === "SUPABASE_SERVICE_ROLE_KEY") return "srv-key";
+        if (key === "EDGE_PROXY_SECRET") return "proxy-secret";
         if (key === "GEMINI_API_KEY") return "gem-key";
         return null;
       }
@@ -33,7 +33,7 @@ function fakeConfigWithWritePassword(password) {
     getScriptProperties: () => ({
       getProperty: (key) => {
         if (key === "SUPABASE_URL") return "https://x.supabase.co";
-        if (key === "SUPABASE_SERVICE_ROLE_KEY") return "srv-key";
+        if (key === "EDGE_PROXY_SECRET") return "proxy-secret";
         if (key === "WRITE_PASSWORD") return password || null;
         return null;
       }
@@ -50,7 +50,7 @@ function fakeConfigWithWritePasswordAndGemini(password) {
     getScriptProperties: () => ({
       getProperty: (key) => {
         if (key === "SUPABASE_URL") return "https://x.supabase.co";
-        if (key === "SUPABASE_SERVICE_ROLE_KEY") return "srv-key";
+        if (key === "EDGE_PROXY_SECRET") return "proxy-secret";
         if (key === "WRITE_PASSWORD") return password || null;
         if (key === "GEMINI_API_KEY") return "gem-key";
         return null;
@@ -82,7 +82,16 @@ function fakeUtilities(uuid) {
       const buf = Buffer.from(base64Str, "base64");
       return Array.from(buf);
     },
-    getUuid: () => uuid || "fixed-uuid"
+    getUuid: () => uuid || "fixed-uuid",
+    // 真正的 Utilities.computeDigest 回傳「有號」位元組陣列(-128..127),這裡照樣模擬,
+    // 這樣程式裡把負數換成十六進位的處理才會被測到。
+    DigestAlgorithm: { SHA_256: "SHA_256" },
+    Charset: { UTF_8: "UTF_8" },
+    computeDigest: (algorithm, value) => {
+      if (algorithm !== "SHA_256") throw new Error("fakeUtilities 只支援 SHA_256");
+      const bytes = require("crypto").createHash("sha256").update(String(value), "utf8").digest();
+      return Array.from(bytes).map((b) => (b > 127 ? b - 256 : b));
+    }
   };
 }
 
@@ -94,18 +103,48 @@ function fakeUtilities(uuid) {
  * 時都會重新開一個乾淨的 Map,測試之間不會互相汙染)。
  */
 function fakeCacheService() {
-  var store = new Map();
+  // 虛擬時鐘(秒):只有測試呼叫 advanceSeconds 才會前進,所以沒有用到 TTL 的既有測試
+  // 行為完全不變(項目永遠不過期)。put 的第三個參數是存活秒數;省略時比照真正的
+  // CacheService 預設 600 秒。
+  var store = new Map(); // key -> { value, expiresAt }
+  var nowSeconds = 0;
+  var controller = {
+    store: store,
+    puts: [], // 每次 put 的 { key, value, ttl }
+    gets: 0,
+    advanceSeconds: (n) => {
+      nowSeconds += n;
+    },
+    // 注入故障:讓 get / put 丟出例外(模擬 CacheService 暫時故障)
+    failGets: false,
+    failPuts: false,
+    // 該 key(前綴)目前存在的值;已過期視為不存在
+    valueOf: (key) => {
+      const entry = store.get(key);
+      return entry && entry.expiresAt > nowSeconds ? entry.value : null;
+    }
+  };
+  var MAX_VALUE_LENGTH = 102400; // 真正的 CacheService 單一值上限約 100 KB,超過 put 會丟例外
   global.CacheService = {
     getScriptCache: () => ({
-      get: (key) => (store.has(key) ? store.get(key) : null),
-      put: (key, value) => {
-        store.set(key, value);
+      get: (key) => {
+        controller.gets++;
+        if (controller.failGets) throw new Error("CacheService unavailable (get)");
+        return controller.valueOf(key);
+      },
+      put: (key, value, ttl) => {
+        if (controller.failPuts) throw new Error("CacheService unavailable (put)");
+        if (String(value).length > MAX_VALUE_LENGTH) throw new Error("Argument too large: value");
+        const ttlSeconds = ttl === undefined ? 600 : ttl;
+        controller.puts.push({ key: key, value: value, ttl: ttl });
+        store.set(key, { value: value, expiresAt: nowSeconds + ttlSeconds });
       },
       remove: (key) => {
         store.delete(key);
       }
     })
   };
+  return controller;
 }
 
 /**

@@ -1,6 +1,7 @@
 /**
- * 文章詳情頁「你可能也想看」:呼叫 related_articles RPC,拿一篇文章自己的
- * embedding 做最近鄰搜尋,不呼叫 Gemini(重用文章已經算好、存在 DB 裡的向量)。
+ * 文章詳情頁「你可能也想看」:呼叫 related_articles RPC,拿一篇文章自己每一段的
+ * 向量做最近鄰搜尋(任一段對任一段最近的距離),不呼叫 Gemini(重用文章已經算好、
+ * 存在 article_chunks 裡的向量)。
  */
 function getRelatedArticles(articleId) {
   return withSafeErrors_('getRelatedArticles', function () {

@@ -5,7 +5,7 @@ function fakeConfig() {
     getScriptProperties: () => ({
       getProperty: (key) => {
         if (key === "SUPABASE_URL") return "https://x.supabase.co";
-        if (key === "SUPABASE_SERVICE_ROLE_KEY") return "srv-key";
+        if (key === "EDGE_PROXY_SECRET") return "proxy-secret";
         return null;
       }
     })
@@ -28,19 +28,18 @@ beforeEach(() => {
 });
 
 describe("supabaseRequest", () => {
-  test("GET sends apikey/Authorization/Content-Type headers and returns parsed JSON", () => {
+  test("GET goes through the proxy with only the shared-secret and Content-Type headers, and returns parsed JSON", () => {
     const fetchSpy = jest.fn().mockReturnValue(fakeResponse(200, '[{"id":1}]'));
     global.httpFetch_ = fetchSpy;
 
     const result = supabaseRequest_("GET", "articles?select=*");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?select=*",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?select=*",
       expect.objectContaining({
         method: "GET",
         headers: {
-          apikey: "srv-key",
-          Authorization: "Bearer srv-key",
+          "X-KB-Proxy-Secret": "proxy-secret",
           "Content-Type": "application/json"
         }
       })
@@ -58,7 +57,7 @@ describe("supabaseRequest", () => {
     });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ title: "hi" }]),
@@ -147,7 +146,7 @@ describe("wrapper functions", () => {
   test("supabaseSelect issues a GET to table?queryString", () => {
     supabaseSelect_("articles", "select=*&status=eq.draft");
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?select=*&status=eq.draft",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?select=*&status=eq.draft",
       expect.objectContaining({ method: "GET" })
     );
   });
@@ -155,7 +154,7 @@ describe("wrapper functions", () => {
   test("supabaseInsert issues a POST with return=representation", () => {
     supabaseInsert_("articles", [{ title: "hi" }]);
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ title: "hi" }]),
@@ -167,7 +166,7 @@ describe("wrapper functions", () => {
   test("supabaseUpdate issues a PATCH to table?filterQuery with return=representation", () => {
     supabaseUpdate_("articles", "id=eq.1", { title: "new" });
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?id=eq.1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.1",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ title: "new" }),
@@ -179,7 +178,7 @@ describe("wrapper functions", () => {
   test("supabaseDelete issues a DELETE to table?filterQuery", () => {
     supabaseDelete_("articles", "id=eq.1");
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?id=eq.1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.1",
       expect.objectContaining({ method: "DELETE" })
     );
   });
@@ -187,7 +186,7 @@ describe("wrapper functions", () => {
   test("supabaseRpc issues a POST to rpc/{fnName} with the args as payload", () => {
     supabaseRpc_("hybrid_search_articles", { query_text: "react" });
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/rpc/hybrid_search_articles",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/hybrid_search_articles",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify({ query_text: "react" })

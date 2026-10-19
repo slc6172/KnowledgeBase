@@ -50,7 +50,7 @@ describe("getRelatedArticles", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/rpc/related_articles",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/related_articles",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify({ source_article_id: "a1", match_count: 3 })
@@ -84,7 +84,7 @@ describe("getRelatedArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/articles?id=in.(%22a2%22,%22a1%22)&select=id,title,category_id,created_at,updated_at,categories(id,name),article_tags(tags(id,name))",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=in.(%22a2%22,%22a1%22)&select=id,title,category_id,created_at,updated_at,categories(id,name),article_tags(tags(id,name))",
       expect.objectContaining({ method: "GET" })
     );
     expect(results.map((r) => r.id)).toEqual(["a2", "a1"]); // RPC order preserved

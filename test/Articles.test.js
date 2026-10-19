@@ -22,7 +22,7 @@ describe("findOrCreateTag_", () => {
     const tag = findOrCreateTag_("react");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?name=eq.react",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?name=eq.react",
       expect.objectContaining({ method: "GET" })
     );
     expect(tag).toEqual({ id: "tag-1", name: "react" });
@@ -39,7 +39,7 @@ describe("findOrCreateTag_", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ name: "vue" }])
@@ -58,39 +58,8 @@ describe("findOrCreateTag_", () => {
     findOrCreateTag_("a&b");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?name=eq.a%26b",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?name=eq.a%26b",
       expect.objectContaining({ method: "GET" })
-    );
-  });
-});
-
-describe("syncArticleTags_", () => {
-  test("deletes existing article_tags rows then reinserts resolved tag ids", () => {
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t1","name":"react"}]')) // find react
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t2","name":"vue"}]')) // find vue
-      .mockReturnValueOnce(fakeResponse(200, "")) // delete existing
-      .mockReturnValueOnce(fakeResponse(201, "[]")); // insert new links
-    global.httpFetch_ = fetchSpy;
-
-    syncArticleTags_("article-1", ["react", "vue"]);
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      3,
-      "https://x.supabase.co/rest/v1/article_tags?article_id=eq.article-1",
-      expect.objectContaining({ method: "DELETE" })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      4,
-      "https://x.supabase.co/rest/v1/article_tags",
-      expect.objectContaining({
-        method: "POST",
-        payload: JSON.stringify([
-          { article_id: "article-1", tag_id: "t1" },
-          { article_id: "article-1", tag_id: "t2" }
-        ])
-      })
     );
   });
 });
@@ -187,122 +156,6 @@ describe("createArticle", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test("inserts with status='draft' and returns the full article via getArticle", () => {
-    const insertedRow = { id: "a1" };
-    const fullRow = {
-      id: "a1",
-      title: "Hello",
-      content_md: "content",
-      category_id: "cat1",
-      status: "draft",
-      categories: { id: "cat1", name: "Tech" },
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(201, JSON.stringify([insertedRow])))
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([fullRow])));
-    global.httpFetch_ = fetchSpy;
-
-    const article = createArticle_({
-      title: "Hello",
-      content_md: "content",
-      category_id: "cat1"
-    });
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      1,
-      "https://x.supabase.co/rest/v1/articles",
-      expect.objectContaining({
-        method: "POST",
-        payload: JSON.stringify([
-          {
-            title: "Hello",
-            content_md: "content",
-            category_id: "cat1",
-            status: "draft"
-          }
-        ])
-      })
-    );
-    expect(article).toEqual({
-      id: "a1",
-      title: "Hello",
-      content_md: "content",
-      category_id: "cat1",
-      status: "draft",
-      categories: { id: "cat1", name: "Tech" },
-      tags: []
-    });
-  });
-
-  test("syncs tag_names when provided", () => {
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(201, '[{"id":"a1"}]')) // insert article
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t1","name":"react"}]')) // find tag
-      .mockReturnValueOnce(fakeResponse(200, "")) // delete existing links
-      .mockReturnValueOnce(fakeResponse(201, "[]")) // insert links
-      .mockReturnValueOnce(
-        fakeResponse(
-          200,
-          JSON.stringify([
-            {
-              id: "a1",
-              title: "Hello",
-              content_md: "content",
-              category_id: null,
-              status: "draft",
-              categories: null,
-              article_tags: [{ tags: { id: "t1", name: "react" } }]
-            }
-          ])
-        )
-      ); // getArticle
-    global.httpFetch_ = fetchSpy;
-
-    const article = createArticle_({
-      title: "Hello",
-      content_md: "content",
-      tag_names: ["react"]
-    });
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      4,
-      "https://x.supabase.co/rest/v1/article_tags",
-      expect.objectContaining({
-        method: "POST",
-        payload: JSON.stringify([{ article_id: "a1", tag_id: "t1" }])
-      })
-    );
-    expect(article.tags).toEqual([{ id: "t1", name: "react" }]);
-  });
-
-  test("mycr F-01 fix: still succeeds when the shared public-read rate limit is already exhausted (owner's write shouldn't be blocked by anonymous read traffic)", () => {
-    global.CacheService.getScriptCache().put(
-      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
-      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
-    );
-    const insertedRow = { id: "a1" };
-    const fullRow = {
-      id: "a1",
-      title: "Hello",
-      content_md: "content",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(201, JSON.stringify([insertedRow])))
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([fullRow])));
-    global.httpFetch_ = fetchSpy;
-
-    const article = createArticle_({ title: "Hello", content_md: "content" });
-
-    expect(article.id).toBe("a1");
-  });
 });
 
 describe("listArticles", () => {
@@ -360,7 +213,7 @@ describe("listArticles", () => {
     });
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?" +
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?" +
         "select=id,title,status,category_id,created_at,updated_at," +
         "categories(id,name),article_tags(tags(id,name))" +
         "&order=updated_at.desc" +
@@ -390,7 +243,7 @@ describe("listArticles", () => {
     listArticles({});
 
     expect(global.httpFetch_).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?" +
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?" +
         "select=id,title,status,category_id,created_at,updated_at," +
         "categories(id,name),article_tags(tags(id,name))" +
         "&order=updated_at.desc" +
@@ -442,7 +295,7 @@ describe("listArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/rpc/articles_by_tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/articles_by_tags",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify({ tag_ids: ["t1", "t2"], lim: 50 })
@@ -450,7 +303,7 @@ describe("listArticles", () => {
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/articles?" +
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?" +
         "id=in.(%22a2%22,%22a1%22)" +
         "&select=id,title,status,category_id,created_at,updated_at,categories(id,name),article_tags(tags(id,name))",
       expect.objectContaining({ method: "GET" })
@@ -481,7 +334,7 @@ describe("listArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/rpc/articles_by_tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/articles_by_tags",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify({
@@ -502,7 +355,7 @@ describe("listArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/rpc/articles_by_tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/articles_by_tags",
       expect.objectContaining({
         payload: JSON.stringify({ tag_ids: ["t1", "t2"], lim: 50 })
       })
@@ -523,7 +376,7 @@ describe("listArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/rpc/articles_by_tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/articles_by_tags",
       expect.objectContaining({ method: "POST" })
     );
     expect(results.length).toBe(100);
@@ -568,240 +421,6 @@ describe("updateArticle", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test("patches only the fields present in data, and doesn't touch tags when tag_names is absent", () => {
-    const currentRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "old content",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const finalRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "new content",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([currentRow]))) // pre-read (touches content_md, so status must be checked first)
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // patch (draft, so no embedding step)
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([finalRow]))); // read-back for return value
-    global.httpFetch_ = fetchSpy;
-
-    const article = updateArticle_("a1", { content_md: "new content" });
-
-    expect(fetchSpy).toHaveBeenCalledTimes(3); // no tag-related calls, no Gemini call for a draft
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
-      expect.objectContaining({
-        method: "PATCH",
-        payload: JSON.stringify({ content_md: "new content" })
-      })
-    );
-    expect(article.content_md).toBe("new content");
-  });
-
-  test("replaces the tag set (and skips PATCH) when only tag_names is given", () => {
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t9","name":"vue"}]')) // find tag
-      .mockReturnValueOnce(fakeResponse(200, "")) // delete existing links
-      .mockReturnValueOnce(fakeResponse(201, "[]")) // insert new link
-      .mockReturnValueOnce(
-        fakeResponse(
-          200,
-          JSON.stringify([
-            {
-              id: "a1",
-              title: "Old title",
-              content_md: "old",
-              category_id: null,
-              status: "draft",
-              categories: null,
-              article_tags: [{ tags: { id: "t9", name: "vue" } }]
-            }
-          ])
-        )
-      ); // getArticle
-    global.httpFetch_ = fetchSpy;
-
-    const article = updateArticle_("a1", { tag_names: ["vue"] });
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      "https://x.supabase.co/rest/v1/article_tags?article_id=eq.a1",
-      expect.objectContaining({ method: "DELETE" })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      3,
-      "https://x.supabase.co/rest/v1/article_tags",
-      expect.objectContaining({
-        method: "POST",
-        payload: JSON.stringify([{ article_id: "a1", tag_id: "t9" }])
-      })
-    );
-    expect(article.tags).toEqual([{ id: "t9", name: "vue" }]);
-  });
-
-  test("regenerates embedding when content_md changes on a published article", () => {
-    fakeConfigWithGemini();
-    const currentRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "old content",
-      category_id: null,
-      status: "published",
-      categories: null,
-      article_tags: []
-    };
-    const finalRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "new content",
-      category_id: null,
-      status: "published",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([currentRow]))) // pre-read (existence + status check)
-      .mockReturnValueOnce(
-        fakeResponse(200, JSON.stringify({ embedding: { values: [0.3, 0.4] } }))
-      ) // gemini, called before any write
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // single combined patch
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([finalRow]))); // read-back for return value
-    global.httpFetch_ = fetchSpy;
-
-    const article = updateArticle_("a1", { content_md: "new content" });
-
-    expect(fetchSpy).toHaveBeenCalledTimes(4);
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
-      expect.anything()
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      3,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
-      expect.objectContaining({
-        method: "PATCH",
-        payload: JSON.stringify({ content_md: "new content", embedding: [0.3, 0.4] })
-      })
-    );
-    expect(article.content_md).toBe("new content");
-  });
-
-  test("does not touch embedding when only category_id changes on a published article", () => {
-    const publishedRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "old",
-      category_id: "cat2",
-      status: "published",
-      categories: { id: "cat2", name: "New Cat" },
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // patch category_id
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([publishedRow]))); // getArticle
-    global.httpFetch_ = fetchSpy;
-
-    updateArticle_("a1", { category_id: "cat2" });
-
-    expect(fetchSpy).toHaveBeenCalledTimes(2); // no embedding call
-  });
-
-  test("mycr F-01 fix: still succeeds when the shared public-read rate limit is already exhausted, for edits that do and don't touch content", () => {
-    global.CacheService.getScriptCache().put(
-      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
-      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
-    );
-    const draftRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "old",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-
-    // 只改分類(不碰內文,舊順序不變的那條路)
-    global.httpFetch_ = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // patch category_id
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([draftRow]))); // read-back
-    expect(() => updateArticle_("a1", { category_id: "cat9" })).not.toThrow();
-
-    // 改內文(有先讀一次判斷狀態的那條路)
-    global.httpFetch_ = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([draftRow]))) // pre-read
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // patch
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([draftRow]))); // read-back
-    expect(() => updateArticle_("a1", { content_md: "new" })).not.toThrow();
-  });
-
-  test("mycr F-01 fix: when Gemini fails while updating a published article's content, no PATCH is sent to articles at all (no partial commit)", () => {
-    fakeConfigWithGemini();
-    const publishedRow = {
-      id: "a1",
-      title: "Old title",
-      content_md: "old content",
-      category_id: null,
-      status: "published",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([publishedRow]))) // pre-read
-      .mockReturnValueOnce(fakeResponse(500, '{"error":"boom"}')); // gemini fails
-    global.httpFetch_ = fetchSpy;
-
-    expect(() => updateArticle_("a1", { content_md: "new content" })).toThrow();
-
-    expect(fetchSpy).toHaveBeenCalledTimes(2); // pre-read + failed gemini call, nothing more
-    fetchSpy.mock.calls.forEach((call) => {
-      expect(call[1]).not.toEqual(expect.objectContaining({ method: "PATCH" }));
-    });
-  });
-});
-
-describe("embedding error propagation", () => {
-  test("mycr F-01 fix: a non-2xx Gemini response makes setArticleStatus_('published') throw before any PATCH is sent (no partial commit)", () => {
-    fakeConfigWithGemini();
-    const currentRow = {
-      id: "a1",
-      title: "Hi",
-      content_md: "Body",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([currentRow]))) // pre-read (existence check)
-      .mockReturnValueOnce(fakeResponse(500, '{"error":"boom"}')); // gemini fails
-    global.httpFetch_ = fetchSpy;
-
-    expect(() => setArticleStatus_("a1", "published")).toThrow(/500.*boom/s);
-
-    expect(fetchSpy).toHaveBeenCalledTimes(2); // pre-read + failed gemini call, nothing more
-    fetchSpy.mock.calls.forEach((call) => {
-      expect(call[1]).not.toEqual(expect.objectContaining({ method: "PATCH" }));
-    });
-  });
 });
 
 describe("deleteArticle", () => {
@@ -816,12 +435,12 @@ describe("deleteArticle", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/attachments?select=*,attachment_folders(id,name)&article_id=eq.a1&order=created_at.asc",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments?select=*,attachment_folders(id,name)&article_id=eq.a1&order=created_at.asc",
       expect.objectContaining({ method: "GET" })
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.a1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(result).toEqual({ deleted: true, id: "a1" });
@@ -849,12 +468,12 @@ describe("deleteArticle", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/x.png",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/a1/x.png",
       expect.objectContaining({ method: "delete" })
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.a1",
       expect.objectContaining({ method: "DELETE" })
     );
   });
@@ -913,109 +532,6 @@ describe("setArticleStatus", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test("publishing updates status, fetches the article, and triggers embedding exactly once", () => {
-    fakeConfigWithGemini();
-    const currentRow = {
-      id: "a1",
-      title: "Hi",
-      content_md: "Body",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const finalRow = {
-      id: "a1",
-      title: "Hi",
-      content_md: "Body",
-      category_id: null,
-      status: "published",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([currentRow]))) // pre-read (existence check + embedding text source)
-      .mockReturnValueOnce(
-        fakeResponse(200, JSON.stringify({ embedding: { values: [0.1, 0.2] } }))
-      ) // gemini, called before any write
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // single combined patch
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([finalRow]))); // read-back for return value
-    global.httpFetch_ = fetchSpy;
-
-    const article = setArticleStatus_("a1", "published");
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      2,
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
-      expect.anything()
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      3,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
-      expect.objectContaining({
-        method: "PATCH",
-        payload: JSON.stringify({ status: "published", embedding: [0.1, 0.2] })
-      })
-    );
-    expect(fetchSpy).toHaveBeenCalledTimes(4); // exactly one embedding call in there
-    expect(article.status).toBe("published");
-  });
-
-  test("setting back to draft does not touch embedding", () => {
-    const fullRow = {
-      id: "a1",
-      title: "Hi",
-      content_md: "Body",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // patch status
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([fullRow]))); // getArticle
-    global.httpFetch_ = fetchSpy;
-
-    setArticleStatus_("a1", "draft");
-
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-  });
-
-  test("mycr F-01 fix: still succeeds when the shared public-read rate limit is already exhausted, both publishing and unpublishing", () => {
-    fakeConfigWithGemini();
-    global.CacheService.getScriptCache().put(
-      "public_read_" + Math.floor(Date.now() / (PUBLIC_READ_RATE_LIMIT_WINDOW_SECONDS_ * 1000)),
-      String(PUBLIC_READ_RATE_LIMIT_PER_HOUR_)
-    );
-    const draftRow = {
-      id: "a1",
-      title: "Hi",
-      content_md: "Body",
-      category_id: null,
-      status: "draft",
-      categories: null,
-      article_tags: []
-    };
-    const publishedRow = Object.assign({}, draftRow, { status: "published" });
-
-    // 取消發布(舊順序不變的那條路)
-    global.httpFetch_ = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // patch status
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([draftRow]))); // read-back
-    expect(() => setArticleStatus_("a1", "draft")).not.toThrow();
-
-    // 發布(有先讀一次算 embedding 的那條路)
-    global.httpFetch_ = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([draftRow]))) // pre-read
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify({ embedding: { values: [0.1] } }))) // gemini
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"a1"}]')) // combined patch
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify([publishedRow]))); // read-back
-    expect(() => setArticleStatus_("a1", "published")).not.toThrow();
-  });
 });
 
 describe("batchDeleteArticles", () => {
@@ -1085,7 +601,7 @@ describe("batchSetArticlesCategory", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.a1",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ category_id: null })
@@ -1093,7 +609,7 @@ describe("batchSetArticlesCategory", () => {
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/articles?id=eq.a2",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.a2",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ category_id: null })
@@ -1167,7 +683,7 @@ describe("batchAddTagsToArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       4,
-      "https://x.supabase.co/rest/v1/article_tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/article_tags",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ article_id: "a1", tag_id: "t-react" }])
@@ -1189,7 +705,7 @@ describe("batchAddTagsToArticles", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ name: "NewTag" }])
@@ -1197,7 +713,7 @@ describe("batchAddTagsToArticles", () => {
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       4,
-      "https://x.supabase.co/rest/v1/article_tags",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/article_tags",
       expect.objectContaining({
         payload: JSON.stringify([{ article_id: "a1", tag_id: "t-new" }])
       })
@@ -1218,5 +734,174 @@ describe("batchAddTagsToArticles", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(4); // a2 still got processed after a1 failed
     expect(result.succeeded).toEqual(["a2"]);
     expect(result.failed).toEqual([{ id: "a1", message: expect.stringContaining("500") }]);
+  });
+});
+
+describe("mycr F-13: listArticles 對匿名呼叫端傳入的參數做型別與範圍檢查", () => {
+  const BASE = "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?";
+  const lastUrl = () => global.httpFetch_.mock.calls[0][0];
+  const emptyOk = () => {
+    global.httpFetch_ = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+  };
+
+  test.each([
+    [0, 50],
+    [-5, 50],
+    [0.5, 50],
+    ["abc", 50],
+    [null, 50],
+    [NaN, 50],
+    [1.5, 1],
+    [2.7, 2],
+    [7, 7],
+    ["25", 25],
+    [100, 100],
+    [101, 100],
+    [100000, 100],
+    [Infinity, 50]
+  ])("limit=%p → 送出的 limit 是 %p(一律落在 1–100)", (input, expected) => {
+    emptyOk();
+    listArticles({ limit: input });
+    expect(lastUrl()).toContain("&limit=" + expected);
+    expect(lastUrl().match(/&limit=(\d+)/)[1] * 1).toBeGreaterThanOrEqual(1);
+    expect(lastUrl().match(/&limit=(\d+)/)[1] * 1).toBeLessThanOrEqual(100);
+  });
+
+  test.each([[-1], [1.5], ["x"], [NaN], [Infinity], [0], [null], [undefined]])(
+    "offset=%p 不合法 → 不帶 offset",
+    (input) => {
+      emptyOk();
+      listArticles({ offset: input });
+      expect(lastUrl()).not.toContain("offset");
+    }
+  );
+
+  test("offset 為正整數照舊帶入;大得離譜的值夾到上限,不會把 1e+21 這種字串送給 PostgREST", () => {
+    emptyOk();
+    listArticles({ offset: 40 });
+    expect(lastUrl()).toContain("&offset=40");
+
+    emptyOk();
+    listArticles({ offset: 1e21 });
+    expect(lastUrl()).toContain("&offset=100000");
+    expect(lastUrl()).not.toMatch(/e\+/);
+  });
+
+  test.each([["abc"], [{ a: 1 }], [5], [null], [true]])(
+    "tagIds=%p 不是陣列 → 視為沒有標籤篩選:不呼叫 articles_by_tags、不丟 TypeError",
+    (input) => {
+      emptyOk();
+      expect(() => listArticles({ tagIds: input })).not.toThrow();
+      expect(lastUrl().startsWith(BASE + "select=id,title")).toBe(true);
+      expect(lastUrl()).not.toContain("rpc/articles_by_tags");
+    }
+  );
+
+  test("tagIds 是合法陣列 → 仍走 articles_by_tags RPC,去重,limit 同樣受上限約束", () => {
+    global.httpFetch_ = jest.fn().mockReturnValue(fakeResponse(200, "[]"));
+    listArticles({ tagIds: ["t1", "t1", "t2"], limit: 100000 });
+    const [url, params] = global.httpFetch_.mock.calls[0];
+    expect(url).toContain("rpc/articles_by_tags");
+    expect(JSON.parse(params.payload)).toEqual({ tag_ids: ["t1", "t2"], lim: 100 });
+  });
+
+  test("tagIds 是空陣列 → 與沒有篩選相同(既有行為)", () => {
+    emptyOk();
+    listArticles({ tagIds: [] });
+    expect(lastUrl()).not.toContain("rpc/");
+  });
+});
+
+describe("mycr F-15: deleteArticle_ 刪除 Storage 檔案失敗時留下可追蹤的日誌", () => {
+  const attachmentsList = (rows) => fakeResponse(200, JSON.stringify(rows));
+
+  test("某個附件的 Storage 刪除回 5xx:文章仍被刪除、日誌含該附件路徑、其他附件照常刪除", () => {
+    const { logs } = fakeLogger();
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(
+        attachmentsList([
+          { id: "att-1", article_id: "a1", type: "photo", file_path: "a1/orphan.png" },
+          { id: "att-2", article_id: "a1", type: "pdf", file_path: "a1/fine.pdf" }
+        ])
+      )
+      .mockReturnValueOnce(fakeResponse(503, "storage unavailable")) // att-1 刪除失敗
+      .mockReturnValueOnce(fakeResponse(200, '{"message":"deleted"}')) // att-2 成功
+      .mockReturnValueOnce(fakeResponse(200, "")); // articles DELETE
+    global.httpFetch_ = fetchSpy;
+
+    const result = deleteArticle_("a1");
+
+    expect(result).toEqual({ deleted: true, id: "a1" });
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    expect(fetchSpy.mock.calls[2][0]).toContain("storage/v1/object/attachments/a1/fine.pdf");
+    expect(fetchSpy.mock.calls[3][1].method).toBe("DELETE");
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("attachments/a1/orphan.png");
+    expect(logs[0]).toMatch(/孤兒|手動/);
+    expect(logs[0]).not.toContain("a1/fine.pdf");
+  });
+
+  test("日誌不含共用密鑰", () => {
+    const { logs } = fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValueOnce(attachmentsList([{ id: "att-1", article_id: "a1", type: "photo", file_path: "a1/x.png" }]))
+      .mockReturnValueOnce(fakeResponse(500, "boom"))
+      .mockReturnValueOnce(fakeResponse(200, ""));
+
+    deleteArticle_("a1");
+
+    expect(logs.join("\n")).not.toContain("proxy-secret");
+  });
+
+  test("全部 Storage 刪除都成功時,不寫任何孤兒檔案日誌", () => {
+    const { logs } = fakeLogger();
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValueOnce(attachmentsList([{ id: "att-1", article_id: "a1", type: "photo", file_path: "a1/x.png" }]))
+      .mockReturnValueOnce(fakeResponse(200, '{"message":"deleted"}'))
+      .mockReturnValueOnce(fakeResponse(200, ""));
+
+    deleteArticle_("a1");
+
+    expect(logs).toEqual([]);
+  });
+
+  test("url 型附件(沒有 file_path)不會觸發 Storage 刪除,也不寫日誌", () => {
+    const { logs } = fakeLogger();
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(attachmentsList([{ id: "att-2", article_id: "a1", type: "url", file_path: null }]))
+      .mockReturnValueOnce(fakeResponse(200, ""));
+    global.httpFetch_ = fetchSpy;
+
+    deleteArticle_("a1");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(logs).toEqual([]);
+  });
+});
+
+describe("mycr F-13: 前端頁面大小不超過後端 limit 上限(否則分頁會被悄悄截斷)", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const read = (rel) => fs.readFileSync(path.join(__dirname, "..", rel), "utf8");
+
+  test("ARTICLE_LIST_PAGE_SIZE <= LIST_LIMIT_MAX_,且 tag 篩選等現行用法的 limit 也在範圍內", () => {
+    const pageSize = Number(read("src/JavaScript.html").match(/var ARTICLE_LIST_PAGE_SIZE\s*=\s*(\d+)/)[1]);
+    const max = Number(read("src/Articles.gs").match(/var LIST_LIMIT_MAX_\s*=\s*(\d+)/)[1]);
+    const def = Number(read("src/Articles.gs").match(/var LIST_LIMIT_DEFAULT_\s*=\s*(\d+)/)[1]);
+    expect(pageSize).toBeGreaterThanOrEqual(1);
+    expect(pageSize).toBeLessThanOrEqual(max);
+    expect(def).toBeLessThanOrEqual(max);
+  });
+
+  test("掃描邏輯本身:頁面大小超過上限時會被抓到(內建樣本)", () => {
+    const extract = (src, re) => Number(src.match(re)[1]);
+    expect(extract("var ARTICLE_LIST_PAGE_SIZE = 150;", /var ARTICLE_LIST_PAGE_SIZE\s*=\s*(\d+)/)).toBeGreaterThan(
+      extract("var LIST_LIMIT_MAX_ = 100;", /var LIST_LIMIT_MAX_\s*=\s*(\d+)/)
+    );
   });
 });

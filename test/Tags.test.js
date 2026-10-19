@@ -51,7 +51,7 @@ describe("listTags", () => {
     const result = listTags();
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?select=*&order=name.asc",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?select=*&order=name.asc",
       expect.objectContaining({ method: "GET" })
     );
     expect(result).toEqual(rows);
@@ -83,7 +83,7 @@ describe("renameTag", () => {
     const tag = renameTag_("t1", "JavaScript");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?id=eq.t1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?id=eq.t1",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ name: "JavaScript" })
@@ -103,7 +103,7 @@ describe("renameTag", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/tags?id=eq.a%26b",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?id=eq.a%26b",
       expect.objectContaining({ method: "PATCH" })
     );
   });
@@ -117,7 +117,7 @@ describe("deleteTag", () => {
     const result = deleteTag_("t1");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?id=eq.t1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?id=eq.t1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(result).toEqual({ deleted: true, id: "t1" });
@@ -151,7 +151,7 @@ describe("countTagUsage", () => {
     const result = countTagUsage("t1");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/article_tags?tag_id=eq.t1&select=article_id",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/article_tags?tag_id=eq.t1&select=article_id",
       expect.objectContaining({ method: "GET" })
     );
     expect(result).toEqual({ count: 3 });
@@ -165,72 +165,6 @@ describe("mergeTags", () => {
 
     expect(() => mergeTags_("t1", "t1")).toThrow(/來源與目標標籤不能相同/);
     expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  test("article only has the source tag: UPDATEs its article_tags row to the target, then deletes the source tag and returns the target's latest data", () => {
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-source","name":"JS"}]')) // findTagOrThrow_(sourceTagId)
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')) // findTagOrThrow_(targetTagId)
-      .mockReturnValueOnce(fakeResponse(200, '[{"article_id":"a1","tag_id":"t-source"}]')) // source rows
-      .mockReturnValueOnce(fakeResponse(200, "[]")) // target rows (a1 not in target)
-      .mockReturnValueOnce(fakeResponse(200, '[{"article_id":"a1","tag_id":"t-target"}]')) // UPDATE result
-      .mockReturnValueOnce(fakeResponse(200, "[]")) // DELETE tags result
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')); // refetch target
-    global.httpFetch_ = fetchSpy;
-
-    const result = mergeTags_("t-source", "t-target");
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      3,
-      "https://x.supabase.co/rest/v1/article_tags?tag_id=eq.t-source",
-      expect.objectContaining({ method: "GET" })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      4,
-      "https://x.supabase.co/rest/v1/article_tags?tag_id=eq.t-target",
-      expect.objectContaining({ method: "GET" })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      5,
-      "https://x.supabase.co/rest/v1/article_tags?article_id=eq.a1&tag_id=eq.t-source",
-      expect.objectContaining({
-        method: "PATCH",
-        payload: JSON.stringify({ tag_id: "t-target" })
-      })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      6,
-      "https://x.supabase.co/rest/v1/tags?id=eq.t-source",
-      expect.objectContaining({ method: "DELETE" })
-    );
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      7,
-      "https://x.supabase.co/rest/v1/tags?id=eq.t-target",
-      expect.objectContaining({ method: "GET" })
-    );
-    expect(result).toEqual({ id: "t-target", name: "JavaScript" });
-  });
-
-  test("article has both source and target tags: DELETEs its source article_tags row instead of UPDATEing", () => {
-    const fetchSpy = jest
-      .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-source","name":"JS"}]')) // findTagOrThrow_(sourceTagId)
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')) // findTagOrThrow_(targetTagId)
-      .mockReturnValueOnce(fakeResponse(200, '[{"article_id":"a2","tag_id":"t-source"}]')) // source rows
-      .mockReturnValueOnce(fakeResponse(200, '[{"article_id":"a2","tag_id":"t-target"}]')) // target rows: a2 already has target too
-      .mockReturnValueOnce(fakeResponse(200, "[]")) // DELETE the source row
-      .mockReturnValueOnce(fakeResponse(200, "[]")) // DELETE tags result
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')); // refetch target
-    global.httpFetch_ = fetchSpy;
-
-    mergeTags_("t-source", "t-target");
-
-    expect(fetchSpy).toHaveBeenNthCalledWith(
-      5,
-      "https://x.supabase.co/rest/v1/article_tags?article_id=eq.a2&tag_id=eq.t-source",
-      expect.objectContaining({ method: "DELETE" })
-    );
   });
 
   test("mycr finding: throws a clear error (not silently returning undefined) when sourceTagId or targetTagId doesn't exist", () => {
@@ -252,20 +186,68 @@ describe("mergeTags", () => {
     expect(fetchSpyMissingTarget).toHaveBeenCalledTimes(2);
   });
 
-  test("mycr finding: throws before any article_tags/network call when the source tag is used by more than TAG_MERGE_MAX_ARTICLES_ articles", () => {
-    const sourceRows = new Array(TAG_MERGE_MAX_ARTICLES_ + 1).fill(null).map((_, i) => ({
-      article_id: "a" + i,
-      tag_id: "t-source"
-    }));
+  test("票 02:兩個標籤都存在時,只送出一個 merge_tags RPC 請求(搬移全部在資料庫的單一交易內),回傳目標標籤", () => {
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-source","name":"JS"}]')) // findTagOrThrow_(sourceTagId)
-      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')) // findTagOrThrow_(targetTagId)
-      .mockReturnValueOnce(fakeResponse(200, JSON.stringify(sourceRows))); // source rows: over the limit
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-source","name":"JS"}]')) // findTagOrThrow_(source)
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')) // findTagOrThrow_(target)
+      .mockReturnValueOnce(fakeResponse(200, '{"id":"t-target","name":"JavaScript"}')); // merge_tags
     global.httpFetch_ = fetchSpy;
 
-    expect(() => mergeTags_("t-source", "t-target")).toThrow(/無法一次合併/);
-    // 超過上限就直接拒絕,不會再多打一次「target rows」的請求。
+    const result = mergeTags_("t-source", "t-target");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/merge_tags",
+      expect.objectContaining({
+        method: "POST",
+        payload: JSON.stringify({ source_tag_id: "t-source", target_tag_id: "t-target" })
+      })
+    );
+    expect(result).toEqual({ id: "t-target", name: "JavaScript" });
+  });
+
+  test("票 02:RPC 回傳單元素陣列時也能正確取出目標標籤", () => {
+    global.httpFetch_ = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"s","name":"JS"}]'))
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t","name":"JavaScript"}]'))
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t","name":"JavaScript"}]'));
+
+    expect(mergeTags_("s", "t")).toEqual({ id: "t", name: "JavaScript" });
+  });
+
+  test("票 02:不再有『來源標籤最多掛在幾篇文章』的上限——來源有幾百篇文章也只是同一個請求", () => {
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"s","name":"JS"}]'))
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t","name":"JavaScript"}]'))
+      .mockReturnValueOnce(fakeResponse(200, '{"id":"t","name":"JavaScript"}'));
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => mergeTags_("s", "t")).not.toThrow();
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(typeof TAG_MERGE_MAX_ARTICLES_).toBe("undefined");
+  });
+
+  test("票 02:merge_tags 失敗時轉成通用的資料服務錯誤,不洩漏內部細節,而且之後沒有任何其他請求", () => {
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"s","name":"JS"}]'))
+      .mockReturnValueOnce(fakeResponse(200, '[{"id":"t","name":"JavaScript"}]'))
+      .mockReturnValueOnce(fakeResponse(400, '{"message":"merge_tags: boom internal detail"}'));
+    global.httpFetch_ = fetchSpy;
+
+    let caught;
+    try {
+      withSafeErrors_("mergeTags", () => mergeTags_("s", "t"));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/資料服務/);
+    expect(caught.message).not.toMatch(/boom internal detail/);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 });

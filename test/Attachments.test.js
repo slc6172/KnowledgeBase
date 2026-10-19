@@ -23,14 +23,14 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("hello").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-orphan.png"}')) // storage upload
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-orphan.png"}')) // storage upload
       .mockReturnValueOnce(fakeResponse(409, "insert or update on table \"attachments\" violates foreign key constraint")) // db insert fails
       .mockReturnValueOnce(fakeResponse(200, "")); // compensating storage delete
     global.httpFetch_ = fetchSpy;
 
     let caught;
     try {
-      uploadAttachmentFile_("stale-article", "cat.png", base64Data, "image/png");
+      uploadAttachmentFile_("22222222-2222-4222-8222-222222222222", "cat.png", base64Data, "image/png");
     } catch (err) {
       caught = err;
     }
@@ -41,7 +41,7 @@ describe("uploadAttachmentFile", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
-      "https://x.supabase.co/storage/v1/object/attachments/stale-article/uuid-orphan.png",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/22222222-2222-4222-8222-222222222222/uuid-orphan.png",
       expect.objectContaining({ method: "delete" })
     );
   });
@@ -52,14 +52,14 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("hello").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-orphan2.png"}')) // storage upload
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-orphan2.png"}')) // storage upload
       .mockReturnValueOnce(fakeResponse(409, "fk violation")) // db insert fails
       .mockReturnValueOnce(fakeResponse(500, "storage also down")); // compensating delete also fails
     global.httpFetch_ = fetchSpy;
 
     let caught;
     try {
-      uploadAttachmentFile_("stale-article", "cat.png", base64Data, "image/png");
+      uploadAttachmentFile_("22222222-2222-4222-8222-222222222222", "cat.png", base64Data, "image/png");
     } catch (err) {
       caught = err;
     }
@@ -78,7 +78,7 @@ describe("uploadAttachmentFile", () => {
     const oversized = Buffer.alloc(20 * 1024 * 1024 + 1, "a").toString("base64");
 
     expect(() =>
-      uploadAttachmentFile_("a1", "big.zip", oversized, "application/zip")
+      uploadAttachmentFile_("11111111-1111-4111-8111-111111111111", "big.zip", oversized, "application/zip")
     ).toThrow(/20\s*MB|過大/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -88,16 +88,16 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("hello").toString("base64"); // 5 bytes
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-1.png"}')) // storage upload
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-1.png"}')) // storage upload
       .mockReturnValueOnce(
         fakeResponse(
           201,
           JSON.stringify([
             {
               id: "att-1",
-              article_id: "a1",
+              article_id: "11111111-1111-4111-8111-111111111111",
               type: "photo",
-              file_path: "a1/uuid-1.png",
+              file_path: "11111111-1111-4111-8111-111111111111/uuid-1.png",
               file_name: "cat.png",
               file_size: 5
             }
@@ -106,11 +106,11 @@ describe("uploadAttachmentFile", () => {
       ); // insert attachments row
     global.httpFetch_ = fetchSpy;
 
-    const attachment = uploadAttachmentFile_("a1", "cat.png", base64Data, "image/png");
+    const attachment = uploadAttachmentFile_("11111111-1111-4111-8111-111111111111", "cat.png", base64Data, "image/png");
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid-1.png",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/11111111-1111-4111-8111-111111111111/uuid-1.png",
       expect.objectContaining({
         method: "post",
         headers: expect.objectContaining({ "Content-Type": "image/png" }),
@@ -119,14 +119,14 @@ describe("uploadAttachmentFile", () => {
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/attachments",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([
           {
-            article_id: "a1",
+            article_id: "11111111-1111-4111-8111-111111111111",
             type: "photo",
-            file_path: "a1/uuid-1.png",
+            file_path: "11111111-1111-4111-8111-111111111111/uuid-1.png",
             file_name: "cat.png",
             file_size: 5,
             folder_id: null
@@ -146,20 +146,20 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("<svg onload=alert(1)></svg>").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-svg.svg"}'))
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-svg.svg"}'))
       .mockReturnValueOnce(
         fakeResponse(
           201,
-          JSON.stringify([{ id: "att-svg", article_id: "a1", type: "photo" }])
+          JSON.stringify([{ id: "att-svg", article_id: "11111111-1111-4111-8111-111111111111", type: "photo" }])
         )
       );
     global.httpFetch_ = fetchSpy;
 
-    uploadAttachmentFile_("a1", "logo.svg", base64Data, "image/svg+xml");
+    uploadAttachmentFile_("11111111-1111-4111-8111-111111111111", "logo.svg", base64Data, "image/svg+xml");
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid-svg.svg",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/11111111-1111-4111-8111-111111111111/uuid-svg.svg",
       expect.objectContaining({
         headers: expect.objectContaining({ "Content-Type": "application/octet-stream" })
       })
@@ -173,17 +173,17 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("hello").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-lie.png"}'))
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-lie.png"}'))
       .mockReturnValueOnce(
-        fakeResponse(201, JSON.stringify([{ id: "att-lie", article_id: "a1", type: "photo" }]))
+        fakeResponse(201, JSON.stringify([{ id: "att-lie", article_id: "11111111-1111-4111-8111-111111111111", type: "photo" }]))
       );
     global.httpFetch_ = fetchSpy;
 
-    uploadAttachmentFile_("a1", "cat.png", base64Data, "text/html");
+    uploadAttachmentFile_("11111111-1111-4111-8111-111111111111", "cat.png", base64Data, "text/html");
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid-lie.png",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/11111111-1111-4111-8111-111111111111/uuid-lie.png",
       expect.objectContaining({
         headers: expect.objectContaining({ "Content-Type": "image/png" })
       })
@@ -195,16 +195,16 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("hi").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-2.pdf"}'))
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-2.pdf"}'))
       .mockReturnValueOnce(
         fakeResponse(
           201,
           JSON.stringify([
             {
               id: "att-9",
-              article_id: "a1",
+              article_id: "11111111-1111-4111-8111-111111111111",
               type: "pdf",
-              file_path: "a1/uuid-2.pdf",
+              file_path: "11111111-1111-4111-8111-111111111111/uuid-2.pdf",
               file_name: "部署檢查清單.pdf",
               file_size: 2
             }
@@ -213,24 +213,24 @@ describe("uploadAttachmentFile", () => {
       );
     global.httpFetch_ = fetchSpy;
 
-    uploadAttachmentFile_("a1", "部署檢查清單.pdf", base64Data, "application/pdf");
+    uploadAttachmentFile_("11111111-1111-4111-8111-111111111111", "部署檢查清單.pdf", base64Data, "application/pdf");
 
     // Storage 路徑不含任何中文字元或編碼過的中文字元，只有 uuid + 副檔名
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid-2.pdf",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/11111111-1111-4111-8111-111111111111/uuid-2.pdf",
       expect.objectContaining({ method: "post" })
     );
     // 完整原始檔名（含中文）原封不動存進 DB 的 file_name
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/attachments",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments",
       expect.objectContaining({
         payload: JSON.stringify([
           {
-            article_id: "a1",
+            article_id: "11111111-1111-4111-8111-111111111111",
             type: "pdf",
-            file_path: "a1/uuid-2.pdf",
+            file_path: "11111111-1111-4111-8111-111111111111/uuid-2.pdf",
             file_name: "部署檢查清單.pdf",
             file_size: 2,
             folder_id: null
@@ -245,21 +245,21 @@ describe("uploadAttachmentFile", () => {
     const base64Data = Buffer.from("hi").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-3.png"}'))
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"11111111-1111-4111-8111-111111111111/uuid-3.png"}'))
       .mockReturnValueOnce(fakeResponse(201, '[{"id":"att-10"}]'));
     global.httpFetch_ = fetchSpy;
 
-    uploadAttachmentFile_("a1", "cat.png", base64Data, "image/png", "folder-1");
+    uploadAttachmentFile_("11111111-1111-4111-8111-111111111111", "cat.png", base64Data, "image/png", "folder-1");
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/attachments",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments",
       expect.objectContaining({
         payload: JSON.stringify([
           {
-            article_id: "a1",
+            article_id: "11111111-1111-4111-8111-111111111111",
             type: "photo",
-            file_path: "a1/uuid-3.png",
+            file_path: "11111111-1111-4111-8111-111111111111/uuid-3.png",
             file_name: "cat.png",
             file_size: 2,
             folder_id: "folder-1"
@@ -292,7 +292,7 @@ describe("addAttachmentUrl", () => {
     const attachment = addAttachmentUrl_("a1", "https://example.com/doc", "Official docs");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachments",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([
@@ -318,7 +318,7 @@ describe("addAttachmentUrl", () => {
     addAttachmentUrl_("a1", "https://example.com/doc");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachments",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments",
       expect.objectContaining({
         payload: JSON.stringify([
           {
@@ -340,7 +340,7 @@ describe("addAttachmentUrl", () => {
     addAttachmentUrl_("a1", "https://example.com/doc", "Official docs", "folder-2");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachments",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments",
       expect.objectContaining({
         payload: JSON.stringify([
           {
@@ -430,7 +430,7 @@ describe("listAttachments", () => {
     const result = listAttachments("a1");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachments?select=*,attachment_folders(id,name)&article_id=eq.a1&order=created_at.asc",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments?select=*,attachment_folders(id,name)&article_id=eq.a1&order=created_at.asc",
       expect.objectContaining({ method: "GET" })
     );
     expect(result).toEqual(rows);
@@ -479,7 +479,7 @@ describe("listFolders", () => {
     const result = listFolders("a1");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders?article_id=eq.a1&order=name.asc",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders?article_id=eq.a1&order=name.asc",
       expect.objectContaining({ method: "GET" })
     );
     expect(result).toEqual(rows);
@@ -504,7 +504,7 @@ describe("createFolder", () => {
     const folder = createFolder_("a1", "設計稿");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ article_id: "a1", name: "設計稿" }])
@@ -539,7 +539,7 @@ describe("renameFolder", () => {
     const folder = renameFolder_("f1", "設計稿 v2");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders?id=eq.f1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders?id=eq.f1",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ name: "設計稿 v2" })
@@ -561,7 +561,7 @@ describe("renameFolder", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/attachment_folders?id=eq.a%26b",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders?id=eq.a%26b",
       expect.objectContaining({ method: "PATCH" })
     );
   });
@@ -575,7 +575,7 @@ describe("deleteFolder", () => {
     const result = deleteFolder_("f1");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders?id=eq.f1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders?id=eq.f1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(fetchSpy).toHaveBeenCalledTimes(1); // 只刪資料夾本身,不額外碰 attachments
@@ -611,12 +611,12 @@ describe("deleteAttachment", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/uuid_cat.png",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/a1/uuid_cat.png",
       expect.objectContaining({ method: "delete" })
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
-      "https://x.supabase.co/rest/v1/attachments?id=eq.att-1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments?id=eq.att-1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(result).toEqual({ deleted: true, id: "att-1" });
@@ -639,7 +639,7 @@ describe("deleteAttachment", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2); // lookup + db delete only
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/attachments?id=eq.att-2",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachments?id=eq.att-2",
       expect.objectContaining({ method: "DELETE" })
     );
   });
@@ -694,7 +694,7 @@ describe("getSignedAttachmentUrl", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/sign/attachments/a1/f.pdf",
       expect.objectContaining({
         method: "post",
         payload: JSON.stringify({ expiresIn: 3600 })
@@ -722,7 +722,7 @@ describe("getSignedAttachmentUrl", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/sign/attachments/a1/f.pdf",
       expect.objectContaining({ payload: JSON.stringify({ expiresIn: 3600 }) })
     );
   });
@@ -745,7 +745,7 @@ describe("getSignedAttachmentUrl", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/storage/v1/object/sign/attachments/a1/f.pdf",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/sign/attachments/a1/f.pdf",
       expect.objectContaining({ payload: JSON.stringify({ expiresIn: 60 }) })
     );
   });
@@ -821,7 +821,7 @@ describe("getTextAttachmentContent", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/storage/v1/object/attachments/a1/s.py",
+      "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/a1/s.py",
       expect.objectContaining({ method: "get" })
     );
     expect(content).toBe("print('hi')");
@@ -886,5 +886,96 @@ describe("getTextAttachmentContent", () => {
 
     expect(() => getTextAttachmentContent("missing-id")).toThrow(/找不到附件.*missing-id/);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("mycr F-06: Storage 物件鍵只含安全字元", () => {
+  const ARTICLE = "33333333-3333-4333-8333-333333333333";
+  const b64 = Buffer.from("hello").toString("base64");
+
+  // 成功路徑的假回應:先 Storage 上傳、再資料庫 insert
+  const fakeSuccessfulUpload = () => {
+    const fetchSpy = jest
+      .fn()
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"ok"}'))
+      .mockReturnValueOnce(fakeResponse(201, JSON.stringify([{ id: "att-x", type: "code" }])));
+    global.httpFetch_ = fetchSpy;
+    return fetchSpy;
+  };
+  const uploadUrl = (spy) => spy.mock.calls[0][0];
+  const insertedRow = (spy) => JSON.parse(spy.mock.calls[1][1].payload)[0];
+  const OBJECT_PREFIX = "https://x.supabase.co/functions/v1/kb-proxy/storage/v1/object/attachments/";
+
+  test.each([
+    ["報告.pdf", "pdf"],
+    ["archive.tar.gz", "gz"],
+    ["photo.PNG", "PNG"],
+    ["x.a1b2c3d4e5", "a1b2c3d4e5"] // 剛好 10 個字元
+  ])("檔名 %s → 物件鍵副檔名 %s,網址與寫進資料庫的 file_path 一致", (fileName, expectedExt) => {
+    fakeUtilities("the-uuid");
+    const spy = fakeSuccessfulUpload();
+
+    uploadAttachmentFile_(ARTICLE, fileName, b64, "x/y");
+
+    expect(uploadUrl(spy)).toBe(OBJECT_PREFIX + ARTICLE + "/the-uuid." + expectedExt);
+    expect(insertedRow(spy).file_path).toBe(ARTICLE + "/the-uuid." + expectedExt);
+    expect(insertedRow(spy).file_name).toBe(fileName); // 原始檔名完整保留
+  });
+
+  test.each([
+    ["evil.png?x=1", "含 ?"],
+    ["evil.png#frag", "含 #"],
+    ["a.b/c", "含斜線"],
+    ["a.b c", "含空白"],
+    ["a.100%", "含 %"],
+    ["報告.文件", "非 ASCII 副檔名"],
+    ["a.verylongextension", "超過 10 個字元"],
+    ["a.", "副檔名為空"],
+    ["noextension", "沒有副檔名"],
+    [".hidden", "只有點開頭"]
+  ])("副檔名不安全(%s,%s)→ 當成無副檔名,網址與 file_path 都只有 {articleId}/{uuid}", (fileName) => {
+    fakeUtilities("the-uuid");
+    const spy = fakeSuccessfulUpload();
+
+    uploadAttachmentFile_(ARTICLE, fileName, b64, "x/y");
+
+    expect(uploadUrl(spy)).toBe(OBJECT_PREFIX + ARTICLE + "/the-uuid");
+    expect(insertedRow(spy).file_path).toBe(ARTICLE + "/the-uuid");
+    expect(insertedRow(spy).file_name).toBe(fileName);
+    // 檔名再怪也不擋使用者上傳:類型一律照既有規則判斷,不因此拒絕
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ["..", "路徑穿越"],
+    ["../other", "含斜線的穿越"],
+    ["abc?x=1", "含 query"],
+    ["", "空字串"],
+    [undefined, "未提供"],
+    ["a1", "不是 UUID"],
+    ["11111111-1111-4111-8111-11111111111", "少一碼"],
+    ["11111111-1111-4111-8111-1111111111111", "多一碼"],
+    ["gggggggg-1111-4111-8111-111111111111", "非十六進位"]
+  ])("articleId 不是 UUID(%s,%s)→ 丟出明確錯誤,不送出任何請求、不寫資料庫", (badId) => {
+    fakeUtilities("the-uuid");
+    const fetchSpy = jest.fn();
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => uploadAttachmentFile_(badId, "a.png", b64, "image/png")).toThrow(/文章 ID|articleId/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("大寫的 UUID 也接受(資料庫回傳的是小寫,但格式檢查不該因大小寫誤擋)", () => {
+    fakeUtilities("the-uuid");
+    const spy = fakeSuccessfulUpload();
+    uploadAttachmentFile_(ARTICLE.toUpperCase(), "a.png", b64, "image/png");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  test("類型偵測與 content-type 對不安全副檔名維持既有行為(未知 → code / octet-stream)", () => {
+    expect(detectAttachmentType_("evil.png?x=1")).toBe("code");
+    expect(resolveUploadContentType_("evil.png?x=1")).toBe("application/octet-stream");
+    expect(detectAttachmentType_("PHOTO.PNG")).toBe("photo");
+    expect(resolveUploadContentType_("PHOTO.PNG")).toBe("image/png");
   });
 });

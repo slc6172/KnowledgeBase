@@ -66,10 +66,12 @@ function inFilter_(column, values) {
 function supabaseRequest_(method, path, options) {
   options = options || {};
   var config = getConfig_();
-  var url = config.supabaseUrl + '/rest/v1/' + path;
+  // 送往 Edge Function 代理(kb-proxy),路徑與 query 原封不動;代理負責驗證共用
+  // 密鑰、白名單、換上 Supabase 新版 secret key。GAS 不再持有任何 Supabase 金鑰,
+  // 也不送 apikey / Authorization(它們只由代理在上游那一跳使用)。
+  var url = proxyUrl_(config, 'rest/v1/' + path);
   var headers = {
-    apikey: config.serviceRoleKey,
-    Authorization: 'Bearer ' + config.serviceRoleKey,
+    'X-KB-Proxy-Secret': config.edgeProxySecret,
     'Content-Type': 'application/json'
   };
   if (options.prefer) {

@@ -50,7 +50,7 @@ describe("listCategories", () => {
     const result = listCategories();
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/categories?select=*&order=name.asc",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?select=*&order=name.asc",
       expect.objectContaining({ method: "GET" })
     );
     expect(result).toEqual(rows);
@@ -75,7 +75,7 @@ describe("createCategory", () => {
     const category = createCategory_("前端");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/categories",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ name: "前端", parent_id: null }])
@@ -112,7 +112,7 @@ describe("createCategory", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/categories",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ name: "React", parent_id: "c1" }])
@@ -147,7 +147,7 @@ describe("updateCategory", () => {
     const category = updateCategory_("c1", "新名稱");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/categories?id=eq.c1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?id=eq.c1",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ name: "新名稱" })
@@ -170,7 +170,7 @@ describe("updateCategory", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/categories?id=eq.a%26b",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?id=eq.a%26b",
       expect.objectContaining({ method: "PATCH" })
     );
   });
@@ -184,7 +184,7 @@ describe("deleteCategory", () => {
     const result = deleteCategory_("c1");
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/categories?id=eq.c1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?id=eq.c1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(result).toEqual({ deleted: true, id: "c1" });
@@ -204,7 +204,7 @@ describe("moveCategory", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/categories?id=eq.c2",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?id=eq.c2",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ parent_id: null })
@@ -275,7 +275,7 @@ describe("moveCategory", () => {
     expect(() => moveCategory_("c1", "c-target")).toThrow(/還有子分類/);
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
-      "https://x.supabase.co/rest/v1/categories?parent_id=eq.c1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?parent_id=eq.c1",
       expect.objectContaining({ method: "GET" })
     );
     expect(fetchSpy).toHaveBeenCalledTimes(3); // two lookups + children check, no update
@@ -298,7 +298,7 @@ describe("moveCategory", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       4,
-      "https://x.supabase.co/rest/v1/categories?id=eq.c1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?id=eq.c1",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ parent_id: "c-target" })

@@ -42,55 +42,26 @@ function findTagOrThrow_(tagId) {
   return rows[0];
 }
 
-// mergeTags_ 對來源標籤底下每一篇文章都會發出對應數量的 Supabase 請求,理由
-// 跟 Articles.gs 的 BATCH_OPERATION_MAX_ITEMS_ 一樣——一次處理太多篇文章有
-// 機會撞到 Apps Script 6 分鐘執行上限,中途被砍掉只留下部分合併的狀態
-// (2026-09 這輪 /mycr 複查才第一次被問出來,三個批次操作函式當時已經有這層
-// 保護,mergeTags_ 沒有跟著套用)。刻意用獨立的常數,不直接共用
-// BATCH_OPERATION_MAX_ITEMS_:兩者語意不同(這裡限制的是「來源標籤目前掛在
-// 幾篇文章上」,不是呼叫端直接傳入的陣列長度),用同一個變數容易在以後各自
-// 調整時互相牽連。
-var TAG_MERGE_MAX_ARTICLES_ = 200;
-
 function mergeTags_(sourceTagId, targetTagId) {
   if (sourceTagId === targetTagId) {
     throw new Error('來源與目標標籤不能相同');
   }
-  // 兩個 ID 都先確認存在——跟 deleteTag_ 刻意不驗證存在性是不同情境:
-  // deleteTag_ 刪掉不存在的東西是無害的空操作,但這裡最後要回傳「合併後的
-  // 目標標籤」,如果目標標籤根本不存在,原本會在跑完整個迴圈之後才發現
-  // 「其實什麼都沒有」、回傳 undefined,不是清楚的錯誤訊息。
+  // 兩個 ID 都先確認存在,讓使用者看到清楚的「找不到標籤」而不是通用的資料服務錯誤
+  // (資料庫端的 merge_tags 也會檢查並拒絕,這裡是為了好的錯誤訊息,不是唯一的防線;
+  // 兩次檢查之間標籤被別人刪除的極小機率情況,由資料庫端的檢查擋下)。
   findTagOrThrow_(sourceTagId);
   findTagOrThrow_(targetTagId);
 
-  var sourceRows = supabaseSelect_('article_tags', eqFilter_('tag_id', sourceTagId));
-  if (sourceRows.length > TAG_MERGE_MAX_ARTICLES_) {
-    throw new Error(
-      '來源標籤目前掛在超過 ' + TAG_MERGE_MAX_ARTICLES_ + ' 篇文章上,無法一次合併,請聯絡開發者調整上限'
-    );
-  }
-
-  var targetRows = supabaseSelect_('article_tags', eqFilter_('tag_id', targetTagId));
-  var targetArticleIds = {};
-  targetRows.forEach(function (row) {
-    targetArticleIds[row.article_id] = true;
+  // 實際的搬移(同時擁有兩者的文章只刪除指向來源的關聯、其餘改指向目標、最後刪除來源標籤)
+  // 全部在資料庫的 merge_tags 函式裡以單一交易完成:任何一步失敗整筆回滾,不會留下
+  // 「一半搬完」的狀態。原本由這裡逐篇文章發請求,所以才需要「最多合併幾篇」的上限
+  // (避免撞 6 分鐘執行時限);改成單一 SQL 交易後,這個上限已經沒有意義,一併移除。
+  var result = supabaseRpc_('merge_tags', {
+    source_tag_id: sourceTagId,
+    target_tag_id: targetTagId
   });
-
-  sourceRows.forEach(function (row) {
-    var filter = eqFilter_('article_id', row.article_id) + '&' + eqFilter_('tag_id', sourceTagId);
-    if (targetArticleIds[row.article_id]) {
-      // 這篇文章同時有來源與目標標籤:直接刪掉指向來源的那筆關聯,不能
-      // UPDATE(會撞到 (article_id, tag_id) unique constraint)。
-      supabaseDelete_('article_tags', filter);
-    } else {
-      supabaseUpdate_('article_tags', filter, { tag_id: targetTagId });
-    }
-  });
-
-  supabaseDelete_('tags', eqFilter_('id', sourceTagId));
-
-  var updatedTarget = supabaseSelect_('tags', eqFilter_('id', targetTagId));
-  return updatedTarget[0];
+  // 回傳型別是單一 tags 列:PostgREST 回傳物件;保險起見也接受單元素陣列。
+  return Array.isArray(result) ? result[0] : result;
 }
 
 if (typeof module !== 'undefined') {
@@ -100,7 +71,6 @@ if (typeof module !== 'undefined') {
     deleteTag_: deleteTag_,
     countTagUsage: countTagUsage,
     mergeTags_: mergeTags_,
-    findTagOrThrow_: findTagOrThrow_,
-    TAG_MERGE_MAX_ARTICLES_: TAG_MERGE_MAX_ARTICLES_
+    findTagOrThrow_: findTagOrThrow_
   };
 }

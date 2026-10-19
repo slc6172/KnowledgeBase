@@ -43,6 +43,16 @@ describe("askKnowledgeBase", () => {
     expect(lock.releaseLockCalls).toBe(1);
   });
 
+  test("search-degradation: an embedding failure still fails the question with the generic AI-service message — RAG never falls back to keyword-only retrieval, never calls the RPC or generateContent", () => {
+    fakeConfigWithWritePasswordAndGemini("correct-horse");
+    fakeLogger();
+    const fetchSpy = jest.fn().mockReturnValue(fakeResponse(429, '{"error":"quota"}')); // gemini embedding
+    global.httpFetch_ = fetchSpy;
+
+    expect(() => askKnowledgeBase("react hooks", "correct-horse", [])).toThrow(/AI 服務暫時發生問題/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // 只有 embedding 那一次
+  });
+
   test("returns noRelevantArticles:true and never calls Gemini generateContent when searchArticles finds nothing", () => {
     fakeConfigWithWritePasswordAndGemini("correct-horse");
     const fetchSpy = jest
@@ -111,7 +121,77 @@ describe("askKnowledgeBase", () => {
     expect(result).toEqual({
       answer: "useState 是一個 React Hook。",
       noRelevantArticles: false,
-      sources: [{ id: "a1", title: "React Hooks 入門" }]
+      sources: [{ id: "a1", title: "React Hooks 入門", categoryName: null }]
+    });
+  });
+
+  describe("sources carry categoryName, taken from the category relation fetched during retrieval (no extra request)", () => {
+    // 檢索 → 補資料 → Gemini 三段回應的組裝輔助:rows 是補資料查詢回傳的文章列。
+    function arrangeRag(rankedIds, enrichedRows) {
+      const fetchSpy = jest
+        .fn()
+        .mockReturnValueOnce(fakeResponse(200, JSON.stringify({ embedding: { values: [0.1] } })))
+        .mockReturnValueOnce(fakeResponse(200, JSON.stringify(rankedIds.map((id) => ({ id })))))
+        .mockReturnValueOnce(fakeResponse(200, JSON.stringify(enrichedRows)))
+        .mockReturnValueOnce(
+          fakeResponse(200, JSON.stringify({ candidates: [{ content: { parts: [{ text: "答案" }] } }] }))
+        );
+      global.httpFetch_ = fetchSpy;
+      return fetchSpy;
+    }
+    const row = (id, title, categories) => ({ id, title, content_md: "內文 " + id, categories, article_tags: [] });
+
+    test("an article with a category exposes its name; an uncategorized one exposes null", () => {
+      fakeConfigWithWritePasswordAndGemini("correct-horse");
+      arrangeRag(["a1", "a2"], [
+        row("a1", "有分類", { id: "c1", name: "前端" }),
+        row("a2", "沒分類", null)
+      ]);
+
+      const result = askKnowledgeBase("問題", "correct-horse", []);
+
+      expect(result.sources).toEqual([
+        { id: "a1", title: "有分類", categoryName: "前端" },
+        { id: "a2", title: "沒分類", categoryName: null }
+      ]);
+    });
+
+    test("an empty category name is normalized to null so the front end never renders an empty label", () => {
+      fakeConfigWithWritePasswordAndGemini("correct-horse");
+      arrangeRag(["a1"], [row("a1", "空名稱分類", { id: "c1", name: "" })]);
+
+      expect(askKnowledgeBase("問題", "correct-horse", []).sources[0].categoryName).toBeNull();
+    });
+
+    test("order and count match the retrieval order, not the enrichment query's order (20 articles)", () => {
+      fakeConfigWithWritePasswordAndGemini("correct-horse");
+      const ids = Array.from({ length: 20 }, (_, i) => "a" + i);
+      const enriched = ids.slice().reverse().map((id, i) => row(id, "T-" + id, i % 2 ? { id: "c", name: "分類" + id } : null));
+      arrangeRag(ids, enriched);
+
+      const result = askKnowledgeBase("問題", "correct-horse", []);
+
+      expect(result.sources.map((s) => s.id)).toEqual(ids);
+      expect(result.sources).toHaveLength(20);
+    });
+
+    test("sources adds no extra request: still exactly embedding, RPC, enrichment, generateContent", () => {
+      fakeConfigWithWritePasswordAndGemini("correct-horse");
+      const fetchSpy = arrangeRag(["a1"], [row("a1", "T", { id: "c1", name: "前端" })]);
+
+      askKnowledgeBase("問題", "correct-horse", []);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(4);
+    });
+
+    test("the prompt sent to Gemini does not include category names (prompt is unchanged)", () => {
+      fakeConfigWithWritePasswordAndGemini("correct-horse");
+      const fetchSpy = arrangeRag(["a1"], [row("a1", "T", { id: "c1", name: "獨特分類名稱" })]);
+
+      askKnowledgeBase("問題", "correct-horse", []);
+
+      const prompt = JSON.parse(fetchSpy.mock.calls[3][1].payload).contents[0].parts[0].text;
+      expect(prompt).not.toContain("獨特分類名稱");
     });
   });
 
@@ -188,12 +268,13 @@ describe("askKnowledgeBase", () => {
     // 歷史時完全一樣的形狀。
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
-      "https://x.supabase.co/rest/v1/rpc/hybrid_search_articles",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/hybrid_search_articles",
       expect.objectContaining({
         payload: JSON.stringify({
           query_text: "那 useEffect 呢",
           query_embedding: [0.1],
           tag_ids: [],
+          match_count: 8, // spec_rag_excerpts:最多檢索 8 篇(原本預設最多 20 篇)
           only_published: true,
           max_semantic_distance: 0.4
         })

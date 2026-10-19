@@ -44,6 +44,10 @@
 
   <div id="ai-answer-panel" class="ai-answer hidden"></div>
 
+  <!-- 語意搜尋(Gemini)暫時不可用、只回傳關鍵字比對結果時顯示。文字固定寫在這裡,
+       不由後端回傳(降級原因只進日誌);沒有「重試」按鈕——再按一次搜尋就是重試。 -->
+  <div id="search-degraded-notice" class="search-degraded-notice hidden" role="status">語意搜尋暫時無法使用,以下僅為關鍵字比對結果,結果可能較少。</div>
+
   <div id="article-list-results"></div>
 
   <div id="article-list-pager" class="pager hidden">

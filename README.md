@@ -15,10 +15,12 @@ Gemini API 負責語意向量與 AI 問答(RAG,細節見 `docs/specs/spec_rag_qa
 - **附件線上預覽**:圖片縮圖、PDF/Office 文件內嵌檢視、程式碼語法高亮、
   Markdown 渲染
 - **Hybrid Search**:`pg_trgm`(關鍵字,對中文友善)+ `pgvector`(語意向量)用
-  RRF 融合排序,標籤可疊加篩選
+  RRF 融合排序,標籤可疊加篩選。文章切成多段、每段各有一個向量,**長文的任何位置**
+  (不只開頭)都搜尋得到
 - **AI 知識庫問答**:以 Hybrid Search 的結果為依據,呼叫 Gemini 生成有來源
   出處的回答(RAG),需要寫入密碼才會觸發,同時也是這個功能對 Gemini 用量的
-  節流機制
+  節流機制。提示詞只送每篇文章的**節錄**(命中的段落,最多 8 篇),不送全文;
+  同一句查詢的向量快取 60 秒,一次搜尋只算一次嵌入
 - **響應式版型**:桌面與手機窄螢幕(`<768px`)都能用,窄螢幕採用漢堡選單、底部
   滑入的篩選面板/更多選單、貼底的批次操作工具列,操作手感比照 Notion 這類知識庫
   工具,降低換裝置的適應成本
@@ -37,26 +39,36 @@ flowchart TB
 
     subgraph GAS["Google Apps Script(伺服器端)"]
         Router["doGet / google.script.run 函式"]
-        Secrets["Script Properties<br/>(Supabase service_role key、Gemini API key)"]
+        Secrets["Script Properties<br/>(EDGE_PROXY_SECRET 共用密鑰、Gemini API key、寫入密碼)"]
+        Cache["CacheService<br/>查詢向量快取(60 秒)<br/>節流與額度計數"]
     end
 
     subgraph Supabase["Supabase"]
-        PG[("Postgres<br/>articles / categories / tags / article_tags / attachments")]
+        Proxy["Edge Function: kb-proxy<br/>驗證共用密鑰 → 白名單 → 換上 secret key → 轉發"]
+        PG[("Postgres<br/>articles / categories / tags / article_tags<br/>attachments / attachment_folders<br/>article_chunks(段落與向量)")]
         Storage[("Storage bucket: attachments")]
-        RPC["hybrid_search_articles()<br/>pg_trgm + pgvector RRF"]
+        RPC["RPC 函式<br/>hybrid_search_articles / related_articles / articles_by_tags<br/>save_article / merge_tags / articles_needing_reindex"]
     end
 
     Gemini["Gemini API<br/>gemini-embedding-001(向量)<br/>+ generateContent(AI 問答回答)"]
 
     UI <-- "google.script.run" --> Router
-    Router -- "UrlFetchApp + service_role key" --> PG
-    Router -- "UrlFetchApp(上傳/下載)" --> Storage
+    Router -- "UrlFetchApp + X-KB-Proxy-Secret" --> Proxy
+    Proxy -- "REST(新版 secret key)" --> PG
+    Proxy -- "Storage(上傳/刪除/簽名/下載)" --> Storage
     Router -- "存檔時(published)/搜尋時呼叫" --> Gemini
     Router -- "AI 問答:憑寫入密碼呼叫" --> Gemini
     Router --> Secrets
+    Router -- "查詢向量快取 / 節流計數" --> Cache
     PG <---> RPC
     Router -- "搜尋/AI 問答時呼叫 RPC" --> RPC
 ```
+
+GAS 不再持有任何 Supabase 金鑰:所有對 Supabase 的呼叫都先送到 Edge Function
+`kb-proxy`,由它驗證共用密鑰、套用白名單(只放行本專案用到的資料表、RPC 與
+`attachments` bucket;資料表的 PATCH / DELETE 必須帶列篩選條件),再用只存在 Supabase
+內部的新版 secret key 轉發。瀏覽器開啟
+附件預覽用的簽名 URL 仍直連 Supabase Storage(token 已內含於 URL),不經代理。
 
 完整的架構決策紀錄與取捨理由見 [`docs/DESIGN.md`](docs/DESIGN.md)。
 
@@ -69,7 +81,8 @@ flowchart TB
 | 資料庫 | [Supabase](https://supabase.com/)(Postgres + `pgvector` + `pg_trgm`) |
 | 檔案儲存 | Supabase Storage |
 | Embedding | Gemini `gemini-embedding-001` |
-| 測試 | Jest(後端邏輯;前端無自動化測試,見下方說明) |
+| 代理 | Supabase Edge Function `kb-proxy`(Deno) |
+| 測試 | Jest(後端邏輯 + 前端的 jsdom 行為測試與靜態文字掃描,見下方說明)、`deno test`(代理) |
 
 ## 專案結構
 
@@ -77,16 +90,24 @@ flowchart TB
 .
 ├── src/                  GAS 原始碼 —— clasp push 這個資料夾
 │   ├── appsscript.json   Apps Script 專案設定
-│   ├── *.gs               後端(14 個)+ 前端進入點(WebApp.gs)
-│   └── *.html             前端視圖與樣式(9 個)
-├── test/                  Jest 單元測試(後端邏輯 + 前端靜態文字掃描,說明見下方)
-│   └── helpers/           測試用的假 httpFetch_/PropertiesService/Utilities
+│   ├── *.gs               後端 + 前端進入點(WebApp.gs)
+│   └── *.html             前端視圖與樣式
+├── supabase/             Edge Function 代理(Deno / TypeScript,以 Supabase CLI 部署)
+│   ├── config.toml        函式設定(明確關閉平台 JWT 驗證)
+│   └── functions/kb-proxy/  handler.ts(核心)、index.ts(進入點)、handler_test.ts(deno test)
+├── tools/                一次性工具(不在 src/,clasp 不會推送;需要時手動上傳、用完刪除)
+│   ├── Reindex.gs         重建所有已發布文章的段落向量(含試跑、可中斷續跑)
+│   └── VerifyBatchEmbedding.gs  用真實金鑰實測 Gemini 批次嵌入(順序、單次筆數上限)
+├── test/                  Jest 測試(後端邏輯 + 前端 jsdom 行為測試與靜態文字掃描,說明見下方)
+│   ├── sql/               SQL 整合測試(對真實 PostgreSQL + pgvector,需 TEST_DATABASE_URL)
+│   └── helpers/           測試用的假 httpFetch_/PropertiesService/CacheService/Utilities
 ├── docs/
 │   ├── DESIGN.md          架構與決策紀錄(/grilling 訪談結果)
-│   ├── schema.sql         Supabase 資料庫 schema(含 hybrid search RPC 函式)
+│   ├── schema.sql         Supabase 資料庫 schema(資料表、段落向量表、RPC 函式、RLS)
 │   ├── specs/             各功能的規格文件(/to-spec 產出)
 │   ├── tickets/           開發過程的任務拆解紀錄(/to-tickets 產出,依功能分資料夾)
-│   └── preview/           前端的靜態預覽工具(不是部署檔案,說明見下方)
+├── .github/              CI(workflows/test.yml)與 dependabot 設定
+├── CLAUDE.md             給 AI 協作者的專案慣例與接縫說明
 ├── package.json / jest.config.js / babel.config.js
 └── .clasp.json.example    clasp 設定範本,複製成 .clasp.json 並填入自己的 scriptId
 ```
@@ -96,37 +117,72 @@ flowchart TB
 ### 1. 建立 Supabase 專案
 
 1. 到 [Supabase](https://supabase.com/) 建立新專案。
-2. 把 [`docs/schema.sql`](docs/schema.sql) 貼到 SQL Editor 執行——會建立所有資料表、
-   索引,以及 `hybrid_search_articles` 這個搜尋用的 RPC 函式。
-3. 到 Storage 建立一個名為 `attachments` 的 bucket(不用設為 public,全部走
-   service_role key 存取)。
-4. 到 **Settings → API Keys**,切到 **Legacy API Keys** 分頁,記下 Project URL
-   和 **`service_role`**(JWT 格式,`eyJ...` 開頭)。
+2. 把 [`docs/schema.sql`](docs/schema.sql) 貼到 SQL Editor 執行一次——會建立所有資料表、
+   索引、段落向量表 `article_chunks`、六個 RPC 函式(`hybrid_search_articles`、
+   `related_articles`、`articles_by_tags`、`merge_tags`、`save_article`、
+   `articles_needing_reindex`),並對所有資料表開啟 RLS(刻意不建 policy)。`vector`、
+   `pg_trgm` 會建在 `extensions` schema,所有函式都固定 `search_path`。這份檔案描述的是
+   最終狀態,以**全新的**Supabase 專案為前提,不需要也不提供升級腳本;全新專案沒有任何文章,
+   所以**不需要**執行重建工具。
+3. 到 Storage 建立一個名為 `attachments` 的 bucket,**不要**勾選 Public bucket
+   (必須是 private;所有存取都經 Edge Function 代理,瀏覽器只會拿到有時效的簽名網址)。
+4. 到 **Settings → API Keys**,確認新版 **secret key**(`sb_secret_...`)存在(新專案
+   預設就有,名稱為 `default`)。**不需要、也不要**把它複製到 Apps Script——它只會由
+   Edge Function 在 Supabase 內部讀取。記下 Project URL(`https://<ref>.supabase.co`)。
 
-   > ⚠️ **一定要用 Legacy 分頁的 `service_role`,不要用新版的 secret key
-   > (`sb_secret_...`)、也不要用 anon/publishable key。**
-   >
-   > 新版 secret key 會主動偵測請求的 User-Agent,只要「像瀏覽器」就一律回
-   > 401——而 Google Apps Script 的 `UrlFetchApp` 送出去的 User-Agent 固定是
-   > `Mozilla/5.0 (compatible; Google-Apps-Script; ...)`,**沒有辦法自訂或
-   > 覆蓋**(Google 官方文件明講、社群多年前提的功能需求也一直沒處理)。這串
-   > UA 会被新版 secret key 判定成瀏覽器直接擋掉,從 Apps Script 打新版
-   > secret key 保證失敗,不是設定錯誤。
-   >
-   > **已知風險**:Supabase 官方文件寫舊版 key 會在 **2026 年底前**逐步淘汰。
-   > 如果屆時被強制淘汰、Google 那邊又還沒開放自訂 `UrlFetchApp` 的
-   > User-Agent,這個「GAS 直接用 `UrlFetchApp` 打 Supabase」的架構會整個
-   >失效,需要另外加一層不受這個限制的代理(例如 Supabase Edge Function)
-   > 才能繞過。現在不需要處理,但部署前你應該知道這個風險存在——建議定期
-   > 回來看 Supabase 的[金鑰遷移公告](https://supabase.com/docs/guides/api/api-keys),
-   > 有變化再重新評估。
+   > 為什麼要多這一層代理:新版 secret key 會依 User-Agent 偵測瀏覽器型請求並回 401,
+   > 而 Apps Script 的 `UrlFetchApp` User-Agent 固定是
+   > `Mozilla/5.0 (compatible; Google-Apps-Script; ...)`,**無法自訂**,所以 GAS 直接
+   > 打新版 secret key 保證失敗;舊版 Legacy `service_role` key 又預計在 **2026 年底前**
+   > 淘汰。Edge Function 代理讓 GAS 不再需要任何 Supabase 金鑰,一併解決兩個問題。
+   > 代價是比直連多一跳、閒置後有冷啟動。
 
-### 2. 取得 Gemini API Key
+### 2. 部署 Edge Function 代理
+
+需要 [Supabase CLI](https://supabase.com/docs/guides/cli)(`supabase login`、
+`supabase link --project-ref <ref>` 先完成)。在專案根目錄:
+
+```bash
+# 產生共用密鑰(64 個十六進位字元);同一個值等一下也要貼到 GAS 的 Script Properties
+openssl rand -hex 32
+
+# 設定 Edge Function secret,然後部署
+supabase secrets set EDGE_PROXY_SECRET=<剛剛產生的值>
+supabase functions deploy kb-proxy
+```
+
+沒有 `openssl`(例如 Windows)時,任選一種方式產生同樣的 64 字元十六進位值——有 Node(跑測試本來就需要)最簡單:
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+或純 PowerShell:`$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b | ForEach-Object { $_.ToString('x2') }) -join ''`。
+設定 Edge Function secret 也可以改在 Supabase Dashboard 的 Edge Functions → Secrets 頁面操作。
+**密鑰不要貼進對話、issue 或任何檔案**(`.gitignore` 已排除 `.env*`);貼出去過就當作外洩,重新產生並覆蓋兩端。
+
+共用密鑰**至少要 32 個字元**:代理偵測到 `EDGE_PROXY_SECRET` 少於 32 個字元時,會把它當成設定錯誤,
+對所有請求(包含帶了正確密鑰的)一律回 500、訊息點名「過短」,不轉發任何東西。上面產生的 64 字元值遠高於門檻。
+
+`supabase/config.toml` 已明確宣告 `verify_jwt = false`(新版 API key 不是 JWT,平台內建
+檢查無法驗證;這個代理改用 `X-KB-Proxy-Secret` 自行授權)。用 curl 冒煙測試:
+
+```bash
+URL=https://<ref>.supabase.co/functions/v1/kb-proxy
+curl -s -o /dev/null -w "%{http_code}\n" "$URL/rest/v1/categories?select=id&limit=1"                                  # 401(缺密鑰)
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-KB-Proxy-Secret: <值>" "$URL/rest/v1/users"                             # 403(白名單外)
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-KB-Proxy-Secret: <值>" "$URL/rest/v1/categories?select=id&limit=1"      # 200
+```
+
+若懷疑共用密鑰外洩,用同樣兩行指令換一個新值(`supabase secrets set` 後重新部署),再更新
+GAS 的 `EDGE_PROXY_SECRET`;Supabase 本身的金鑰完全不受影響。
+
+### 3. 取得 Gemini API Key
 
 到 [Google AI Studio](https://aistudio.google.com/apikey) 建立一組 API key,
 用於產生文章與搜尋查詢的 embedding 向量。
 
-### 3. 部署到 Apps Script
+### 4. 部署到 Apps Script
 
 ```bash
 npm install -g @google/clasp   # 如果還沒裝過
@@ -146,8 +202,8 @@ clasp push
 
 1. 左側選單點「專案設定」(齒輪圖示),捲到「指令碼屬性」(Script Properties)
    區塊,點「新增指令碼屬性」,依序新增四筆(名稱區分大小寫):
-   `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`、`GEMINI_API_KEY`(步驟 1、2
-   拿到的真實值)、`WRITE_PASSWORD`(自己定一個寫入密碼,建議至少 12 個
+   `SUPABASE_URL`、`EDGE_PROXY_SECRET`(步驟 2 產生的共用密鑰)、`GEMINI_API_KEY`
+   (步驟 3 拿到的真實值)、`WRITE_PASSWORD`(自己定一個寫入密碼,建議至少 12 個
    字元——長度不夠時,`Config.gs` 的 `debugConfig_()` 執行後會在紀錄裡提醒,
    見下方「已知問題修復紀錄」第 83 條)。全部用這個介面直接輸入,不需要
    編輯任何程式碼,金鑰跟密碼完全不會出現在原始碼或版本控制裡。
@@ -172,7 +228,50 @@ clasp push
      設定畫面上選了什麼。
 3. 開啟部署後的網址即可使用。
 
-### 4. 跑測試(選用)
+### 5. 部署後驗收
+
+順序很重要:**先部署函式並用 curl 冒煙測試通過(步驟 2),才設定 GAS 的屬性並 `clasp push`(步驟 4)**,
+這樣 GAS 第一次上線時代理就已經就緒。全部完成後,用無痕視窗開啟網址實測一輪:
+
+1. 新增 / 編輯 / 發布 / 刪除文章,標籤篩選與分頁,搜尋、相關文章與 AI 問答。
+2. 上傳附件:一般大小的檔案,以及**接近你實際會用的上限**的大檔(經代理的實際大小上限
+   取決於 Edge Function 的資源限制,程式裡的 20 MB 只是應用層的上限,沒有量過代理端);
+   再刪除它,確認 Storage 沒有殘留。
+3. 預覽:圖片、PDF / Office 文件(經 Google Docs Viewer)、程式碼附件。
+4. 閒置一段時間後的第一個請求(Edge Function 冷啟動,慢一點可接受)。
+5. 到 Supabase Dashboard 的 **Advisors → Security**,確認七張表都是 RLS 開啟(有「RLS
+   Enabled No Policy」的 INFO 是預期的)、沒有「函式 search_path 可變」或「擴充功能在 public」的
+   警告,以及 `attachments` bucket 不是 public。
+6. 發布一篇**長文**(約 1 萬字以上,尾段談一個和開頭不同的主題),用尾段的內容搜尋,確認找得到
+   ——這是分段向量要解決的問題;超過 40 段(約 6 萬字)時應該收到「太長無法發布」的明確訊息。
+
+段落向量由文章發布時自動產生,日常不需要手動處理。只有兩種情況需要重建:**換嵌入模型**(改
+`src/Embeddings.gs` 的 `EMBEDDING_MODEL_NAME_`,重新部署),或資料庫裡有已發布文章卻沒有段落
+(例如從舊版搬過來)。用 `tools/Reindex.gs`,它是一次性工具,**不在 `src/` 內**:
+
+1. 把 `tools/Reindex.gs` 貼進 Apps Script 專案——專案必須已經是包含分段向量功能的新版本(它會呼叫新版才有的函式,
+   所以要在 `clasp push` 之後才上傳;`tools/VerifyBatchEmbedding.gs` 則是獨立的,可以在新版上線之前執行);
+2. 在「專案設定 → 指令碼屬性」新增 `REINDEX_ENABLED = true`;
+3. 先執行 `reindexDryRun`,看執行紀錄裡的文章數、段數與預估 Gemini 請求數;
+4. 再執行 `reindexAllArticles`;單次執行約 5 分鐘會自動存檔停下,再執行一次即可接續;
+5. 全部完成後 `REINDEX_ENABLED` 會**自動消失**,然後**刪除這個檔案**。
+
+為什麼要這麼謹慎:入口函式沒有底線(編輯器才能手動執行),所以檔案只要留在已部署的版本裡,任何人都能
+呼叫它去消耗你的 Gemini 額度。三道防護:開關(試跑也要)、完成後自動解除、入口函式不回傳任何資料;
+超過 40 段的文章只記錄、不處理。注意:向量維度寫在資料庫欄位型別上(768),換成**不同維度**的模型需要先
+改 schema,這個工具處理不了。
+
+**Gemini 額度(會影響發布長文與重建)**:依官方的 rate limits 文件,免費層的 Gemini Embedding 是**每分鐘 100 個請求、
+每天 1,000 個**(每個專案,不是每把金鑰;每天額度在太平洋時間午夜重置;付費 Tier 1 每分鐘 3,000)。文件沒有寫「一個批次裡每筆文字算不算
+一個請求」,但 2026-10-03 的實測可以推論**每一段文字算一個**:一分鐘內依序送了 3 + 3 + 40 + 41 = 87 筆都成功,再送 100 筆就回
+HTTP 429——若一次 HTTP 呼叫只算一個,這種用量不可能觸發限制(這是推論,不是文件明載)。實務上:發布(或編輯)一篇 40 段的長文
+會用掉每分鐘額度的 40%;連續發布好幾篇很長的文章可能遇到 429,畫面會顯示「AI 服務暫時發生問題,請稍後再試」,等一分鐘即可;
+重建工具遇到 429 會優雅停下並提示,等一分鐘再執行一次(若仍然 429,可能是當天額度用完,隔天再試)。一般長度的文章(1~5 段)與日常使用不受影響。
+**一次搜尋只算一次嵌入**:搜尋時的文章列表與 AI 問答是同一句查詢,查詢向量會在伺服器端快取 60 秒,AI 問答直接取用列表請求剛算好的向量——
+語意搜尋節流(每分鐘 20 次,全站共用)也只在真的呼叫 Gemini 時計數;AI 問答(本來就要寫入密碼)不再消耗匿名訪客共用的每小時公開讀取額度(決策 25)。
+同一次實測也確認了:**批次回傳的順序與請求一致**,且 40 筆、41 筆都能放進同一個批次請求(所以 `EMBEDDING_BATCH_MAX_ = 40` 不需要調整)。
+
+### 7. 跑測試(選用)
 
 ```bash
 npm install
@@ -190,26 +289,47 @@ npm test
 之前寫死的數字放著沒跟著每輪新增的測試更新,已經連續好幾輪都是錯的,不如直接
 跑 `npm test` 看實際數字。)
 
+**SQL 整合測試**(`test/sql/`)對真實的 PostgreSQL 16 + pgvector 執行 `docs/schema.sql`,涵蓋
+搜尋排序與最近段落、相關文章、原子寫入(任一步失敗三者都不動)、標籤合併、RLS 與匿名角色、擴充功能位置
+與 `search_path`。設定環境變數 `TEST_DATABASE_URL` 才會執行,**沒設定時整批自動跳過**(`npm test` 不需要
+任何資料庫)。每個測試檔會建立自己專屬的臨時資料庫(連線的帳號需要能建立資料庫、角色與擴充功能),結束後
+刪除。本機可以用 Docker 起一個:
+
+```bash
+docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=kbtest -e POSTGRES_USER=kbtest -e POSTGRES_DB=kb_test pgvector/pgvector:pg16
+TEST_DATABASE_URL=postgres://kbtest:kbtest@localhost:5432/kb_test npm test
+```
+
+CI 以同一個映像(`pgvector/pgvector:pg16`)的服務容器真的執行這批測試。映像目前以版本標籤固定;
+第一次 CI 成功後,可改成以 digest 固定。
+
+Edge Function 代理的測試是獨立的 Deno 測試(`deno test supabase/functions/kb-proxy/`,
+需要安裝 [Deno](https://deno.com/);CI 會自動執行)。代理核心只用 Deno 內建與 `node:*`
+模組,不需要網路。兩端的契約(網址形狀、`X-KB-Proxy-Secret` header)分開測試,有漂移風險,
+所以真實環境仍需照下面的步驟做冒煙測試。
+
 ## 前端測試方式的說明
 
-前端(`src/*.html` + 部分 `.gs`)沒有真正的行為/DOM 測試——`google.script.run` 沒有
-現成的可替換測試接縫,要做到跟後端一樣的紅綠循環,需要先花一輪工程幫它包一層
-類似 `httpFetch_` 的介面,這在當初的 spec 裡明確列為 Out of Scope。
+前端(`src/*.html` + 部分 `.gs`)靠 `google.script.run` 與後端溝通,它沒有現成的可替換
+接縫,所以沒有「整頁」的端對端測試。取而代之,前端有兩類測試:
 
-從響應式版型(`docs/tickets/responsive-layout/`)這一輪開始,前端補上了另一種測試:
-**靜態文字掃描測試**——直接讀 `src/*.html` 的原始碼文字,用正規表達式比對關鍵的
-class、屬性、CSS 規則、token 數值是否存在(例如 `test/NavDrawer.test.js`、
-`test/VisualDesignRefresh.test.js`),防止這些關鍵寫法未來被意外刪除或改壞。這不是
-「畫面渲染出來對不對」的行為測試,純粹是「原始碼裡該有的東西還在不在」的文字比對,
-兩者不能互相取代。
+- **函式抽取 + jsdom 執行**:用 `extractFunction` 從 `JavaScript.html` 抓出函式原始碼,
+  只餵它需要的最小假依賴,在 jsdom 裡真的執行並驗證 DOM 結果(例如
+  `test/AiSourcesPanel.test.js`、`test/SearchDegradedNotice.test.js`、
+  `test/AttachmentUrlRender.test.js`)。這是新的前端行為首選的測法。
+- **靜態文字掃描**:直接讀 `src/*.html` 的原始碼文字,用正規表達式比對關鍵的 class、
+  屬性、CSS 規則、token 數值是否存在(例如 `test/NavDrawer.test.js`、
+  `test/VisualDesignRefresh.test.js`),防止這些關鍵寫法被意外刪除或改壞。這不是
+  「畫面渲染出來對不對」的行為測試,純粹是「原始碼裡該有的東西還在不在」。
 
-真正「畫面看起來對不對」的驗收,還是得靠 `docs/preview/Preview.html`:把
-`src/Index.html` 裡 Apps Script 用來引入檔案的樣板標籤都解析成靜態內容,並把
-`google.script.run` 換成回傳假資料的 mock,讓開發時不用每次都重新部署到 Apps
-Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬器測試窄螢幕版型)。
-**這不是部署檔案**,純粹是開發輔助工具。
+兩者不能互相取代。「畫面看起來對不對」仍然要實際部署後手動確認(尤其是窄螢幕版型)。
 
 ## 已知問題修復紀錄(2026-08-19 起,持續累積)
+
+> 這份紀錄是**歷史**,依時間順序記錄每一次修了什麼、為什麼。其中「重新到 SQL Editor 執行」、
+> `drop function`、「補開 RLS」之類的步驟,只對當時已經建好的資料庫有意義。本專案的目標是
+> **從無到有佈建**:`docs/schema.sql` 永遠是完整的最終狀態,新專案貼上執行一次即可,
+> 不需要重播這些歷史步驟。
 
 實際部署後回報的問題,依序修好的:
 
@@ -1548,7 +1668,7 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     原本斷言的其實是這次要修的 bug 本身)。`regenerateArticleEmbedding_`(`Embeddings.gs`)
     現在不再被 `Articles.gs` 任何路徑呼叫,但它自己還有獨立的單元測試
     (`test/Embeddings.test.js`),這次沒有動它,留著給以後有需要的人判斷要不要清掉。已跑過
-    完整測試套件確認修復(367 個全過,含這次新增的測試),擁有者尚未部署實測。
+    完整測試套件確認修復(367 個全過,含這次新增的測試),**擁有者部署後實測確認沒有任何異常。**
 
 79. **Markdown 消毒設定收緊,不再放行表單/樣式/(AI 回答)遠端圖片(`/mycr` 第三輪全新複掃
     F-02)**:文章內文、md 附件預覽、AI 問答回答、EasyMDE 編輯器 preview 這四個把 Markdown
@@ -1589,7 +1709,7 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     檢查改成累積在新檔案裡,隨每張票同步新增;Ticket 05 因此從「一次性改寫」變成「驗證四個
     站點都有涵蓋到」,而且這個驗證確實抓到一個缺口——文章內文那個站點雖然 Ticket 01 就已經
     改了程式碼,卻沒有補上專屬的檢查,已在 Ticket 05 補上。已跑過完整測試套件確認修復(377
-    個全過,含這次新增的測試),擁有者尚未部署實測。
+    個全過,含這次新增的測試),**擁有者部署後實測確認沒有任何異常。**
 
 80. **清掉 `regenerateArticleEmbedding_`(第 78 條 F-01 修正留下的死程式碼)**:第 78 條把
     `updateArticle_`/`setArticleStatus_` 改成直接呼叫 `generateEmbedding_`、自己決定何時
@@ -1627,9 +1747,9 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     呼叫之後,**直接刪除**(函式本體、`module.exports` 項目、專屬測試),`Search.gs` 裡一則
     提到這個函式名稱的註解也一併更新——**這是這次使用者明確要求的做法**,不確定會不會用到
     的函式就先刪,不再沿用第 80 條當時「留著、記一筆提醒」的做法。已跑過完整測試套件確認
-    修復(375 個全過),擁有者尚未部署實測,且**這次新增的資料庫函式需要在 Supabase SQL
-    Editor 手動執行 `docs/schema.sql` 裡新增的那段 `create or replace function
-    articles_by_tags`,不會隨程式碼部署自動套用**。
+    修復(375 個全過)。**這次新增的資料庫函式需要在 Supabase SQL Editor 手動執行
+    `docs/schema.sql` 裡新增的那段 `create or replace function articles_by_tags`,不會
+    隨程式碼部署自動套用**——使用者已手動執行這段 SQL,並**部署後實測確認沒有任何異常**。
 
 82. **前端非同步回應加上防過期檢查,避免舊回應蓋掉使用者目前真正想看的內容(`/mycr` 第三輪
     全新複掃 F-06)**:`google.script.run` 的每次呼叫是獨立執行,回應不保證依序抵達。
@@ -1665,7 +1785,7 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     回應,測試自己決定何時、以什麼順序觸發每個回呼),驗證的是「畫面上最終顯示的內容」,不是
     程式碼裡有沒有某個 if 判斷式;列表/搜尋組的測試特地驗證了「跨函式交錯呼叫、故意讓較早的
     呼叫較晚回應」的情境,確認兩個函式真的共用同一個序號、不是各自獨立判斷。已跑過完整測試
-    套件確認修復(388 個全過),擁有者尚未部署實測。
+    套件確認修復(388 個全過),**擁有者部署後實測確認沒有任何異常。**
 
 83. **密碼鎖定改用 `LockService` 包住檢查段落,補上密碼長度診斷提示(`/mycr` 第三輪全新複掃
     F-05)**:`Auth.gs` 密碼鎖定計數器原本是「檢查鎖定 → 比對密碼 → 記錄結果」三個各自獨立的
@@ -1687,7 +1807,7 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     但**絕對不印密碼本身的任何片段**(密碼熵比 API 金鑰低,就算只洩漏開頭/結尾幾個字元,
     對「可能被猜中」的風險影響也比金鑰大得多,刻意跟 `debugConfig_()` 對金鑰的 `preview()`
     做法不一樣)。`test/helpers/testSetup.js` 新增 `fakeLockService()`,比照既有假服務的
-    慣例。已跑過完整測試套件確認修復,擁有者尚未部署實測。
+    慣例。已跑過完整測試套件確認修復,**擁有者部署後實測確認沒有任何異常。**
 
 84. **金鑰佈建流程改用 Apps Script 的指令碼屬性 UI,不再讓真實金鑰經過任何原始檔
     (`/mycr` 第三輪全新複掃 F-09)**:`setupScriptProperties_()` 原本的流程是「把函式裡四個
@@ -1699,13 +1819,13 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     專屬的測試),README 步驟 1 改成直接引導去 Apps Script 編輯器的「專案設定 → 指令碼
     屬性」,新增四筆屬性直接輸入真實值——不需要編輯任何程式碼,金鑰跟密碼完全不會出現在
     原始碼或版本控制裡,也不再需要「暫時拿掉底線」這種手動步驟。已跑過完整測試套件確認修復,
-    擁有者尚未部署實測。
+    **擁有者部署後實測確認沒有任何異常。**
 
 85. **CI workflow 加上 `concurrency`,新推送取消還在跑的舊 CI 執行(`/mycr` 第三輪全新複掃
     F-10 剩餘部分)**:第 77 條當時修了 `permissions`/action 固定版本,`concurrency` 那部分
     當時沒有一起做。這次補上,同一分支/PR 上新推送會自動取消還在跑的舊 CI,不浪費資源跑一個
     馬上就會被蓋過去的結果。`test/CiWorkflowHardening.test.js` 新增對應斷言。已跑過完整
-    測試套件確認修復,擁有者尚未部署實測。
+    測試套件確認修復,**擁有者部署後實測確認沒有任何異常。**
 
 86. **合併三處重複的分類下拉選單建構邏輯,`Preview.html` 補上消毒(`/mycr` 第三輪全新複掃
     F-11)**:`loadCategoryFilterOptions`/`loadBatchCategoryOptions`/`renderCategoryOptions`
@@ -1719,7 +1839,7 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     環境的完全對齊,那是為了防供應鏈被竄改的風險,對一個只在本機執行、不對外曝露的開發工具
     來說投入產出比不高。這是這個專案第一次替 `docs/preview/Preview.html` 寫測試,沿用 F-02
     已經建立的「直接載入 marked.umd.js/purify.min.js 實體檔案到 vm 沙箱執行」技巧。已跑過
-    完整測試套件確認修復,擁有者尚未部署實測。
+    完整測試套件確認修復,**擁有者部署後實測確認沒有任何異常。**
 
 87. **GitHub 上傳前置檔案的檢查與版本號更新(第三次)**:比照第 67、76 條當時的模式,這輪
     (第 78–86 條,`/mycr` 第三輪全新複掃 F-01/F-02/F-04/F-05/F-06/F-09/F-10/F-11 全部
@@ -1741,7 +1861,7 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     實際需要的更嚴格地要求 Node 22.22.2 以上,而不是原本第 77 條(F-03)訂出的 22.18.0
     以上。已放寬回 `^22.18.0 || >=24.11.0`,並用真正的 Node 22.18.0 重新跑過一次完整測試
     套件確認 403 個全過,不是只看宣告的版本範圍自洽。已跑過完整測試套件確認全部修復(403 個
-    全過),擁有者尚未部署實測。
+    全過),**擁有者部署後實測確認沒有任何異常。**
 
 88. **更新上傳 GitHub 所需的檔案**:使用者明確要求這次專門整理一輪。過程中發現一個之前
     幾輪都沒抓到的問題:`package.json` 裡 `marked`/`dompurify` 寫的是 `^18.0.12`/
@@ -1767,16 +1887,256 @@ Script 就能用瀏覽器直接打開檢查介面(包含用瀏覽器裝置模擬
     「真正會被追蹤的檔案」的情境(排除任何本機獨有、被 `.gitignore` 排除的殘留),跑
     `npm ci` + `npm test`,411 個全過——這個驗證方式比之前幾輪單純檢查 `.gitignore` 內容
     更直接,直接證明了 GitHub Actions 實際拿到的檔案集合可以正常運作,不是只看設定檔寫了
-    什麼。已跑過完整測試套件確認全部修復(411 個全過,含這次新增的 8 個測試),擁有者尚未
-    部署實測。版本號從 `1.4.0` 調到 `1.4.1`(patch 版——這輪是維護/工具鏈調整,不是新功能也
-    不是破壞性變更)。
+    什麼。已跑過完整測試套件確認全部修復(411 個全過,含這次新增的 8 個測試)。**擁有者已
+    把第 78–88 條這整輪(含第 81 條 F-04 需要手動執行的 `articles_by_tags` SQL)部署後
+    實測確認沒有任何異常。**版本號從 `1.4.0` 調到 `1.4.1`(patch 版——這輪是維護/工具鏈
+    調整,不是新功能也不是破壞性變更)。
+
+89. **GAS 改經 Supabase Edge Function 代理存取 Supabase,不再持有 service_role key**
+    (`docs/specs/spec_edge_function_proxy.md`,依 `/to-tickets` → `/tdd` 流程實作,票在
+    `docs/tickets/edge-function-proxy/issues/`)。原因有二:Legacy `service_role` key 預計
+    2026 年底前淘汰;新版 secret key 依 User-Agent 偵測瀏覽器型請求回 401,而 GAS 的
+    `UrlFetchApp` User-Agent 無法自訂,所以舊架構在 Legacy key 淘汰那天會整個失效、GAS 端
+    沒有辦法自救。做法是新增薄轉發層 `kb-proxy`:GAS 端組出的 PostgREST / Storage 路徑與
+    query 原封不動送給代理(`eqFilter_` / `inFilter_` 等歷經多輪踩坑的查詢組法與所有業務
+    邏輯完全沒動),代理只負責「驗證共用密鑰 → 白名單 → 換上新版 secret key → 轉發」。
+    重點:(1) 共用密鑰以自訂 header `X-KB-Proxy-Secret` 傳遞、常數時間比對,兩端同名設定
+    `EDGE_PROXY_SECRET`;真正的 Supabase secret key 只存在 Supabase 內部(由執行環境注入的
+    `SUPABASE_SECRET_KEYS` 讀取 `default` 那把,只放 `apikey` header)。(2) 平台
+    `verify_jwt` 在 `supabase/config.toml` 明確關閉——新版 API key 不是 JWT,預設值會讓
+    GAS 每個請求都被平台 401;寫進設定檔而不是只靠部署旗標,避免日後重新部署忘了帶而還原。
+    (3) 白名單集中定義:6 張資料表(GET/POST/PATCH/DELETE)、3 個 RPC(僅 POST)、
+    `attachments` bucket 的上傳/刪除/簽名/下載;路徑檢查只做「拒絕」(含編碼形式的斜線、
+    `..`、空段落、控制字元),通過的原始路徑原樣轉發。`test/EdgeFunctionProxyConfig.test.js`
+    讓白名單與 schema 檔、GAS 現行呼叫點對齊,新增資料表或 RPC 忘了更新白名單會立刻報錯。
+    (4) 只轉發 `Content-Type` 與 `Prefer` 兩個請求 header、以原始位元組轉發 body(Edge
+    Function 每請求只有 2 秒 CPU 時間,不能解析大檔);回應只回狀態碼、body、
+    `Content-Type`,不加 CORS。(5) 代理自產的錯誤可與上游錯誤區分:401 認證失敗、403
+    白名單、405 方法、500 代理設定缺漏(訊息點名缺哪個)、502 上游不可達(細節不外洩)。
+    (6) GAS 端:`Config.gs` 改讀 `EDGE_PROXY_SECRET`(缺漏時明確報錯)、
+    `SupabaseClient.gs` / `StorageClient.gs` 改送代理網址並只帶共用密鑰 header;`debugConfig_`
+    對共用密鑰只印長度與過短警告(< 32 字元),不印任何片段;瀏覽器用的簽名 URL 仍直連。
+    `test/NoServiceRoleInGas.test.js` 靜態掃描 `src/` 不得再出現 service_role 字樣。
+    (7) CI 新增 `deno test` 步驟,`denoland/setup-deno` 以 commit SHA 與精確的 Deno 版本
+    固定並納入 `CiWorkflowHardening.test.js`。**誠實評估**:這是相容性遷移,不是效能或
+    功能升級——多一跳、閒置後有冷啟動,單純轉發本身不提升安全,提升來自「secret key 不離開
+    Supabase」與白名單兩點。**部署與遷移步驟見上方「既有部署的遷移步驟」;兩端契約分開測試,
+    所以真實環境另有實測(2026-10-01,擁有者部署,並以 Supabase 日誌核對)。已實測確認:**
+    冒煙測試依序得到 401(缺密鑰)、403(白名單外)、200(合法讀取);GAS 切換後,Supabase
+    日誌中不再有 `Google-Apps-Script` 直連 REST / Storage 的請求,代理端 401、403、404、405、409、
+    5xx 皆為 0 筆;經代理並成功的操作有:讀取各資料表、新增 / 更新 / 刪除文章與標籤關聯、新增分類、
+    3 個 RPC(`hybrid_search_articles`、`related_articles`、`articles_by_tags`)、附件資料列新增 / 刪除、
+    Storage 上傳(`.html`、`.md`、`.pdf`、`.py`)、下載、簽名連結產生與刪除;PDF 附件簽名連結實際在
+    瀏覽器預覽成功(瀏覽器直連 Storage、不經代理)。第一個冷啟動請求約 1.5 秒。更換 Supabase secret key
+    後代理仍正常(代理只讀名為 `default` 的那把)。**尚未實測:大檔上傳**(Edge Function 每請求 2 秒 CPU
+    時間,經代理的實際大小上限未知,日常若遇到大檔需另立 spec 評估簽名上傳網址直傳)、Office 附件預覽。
+    **實務備註:** Windows 沒有 `openssl` 時,共用密鑰可用 Node 或 PowerShell 產生(見快速開始步驟 2);
+    PowerShell 的 `curl` 是 `Invoke-WebRequest` 的別名,冒煙測試要打 `curl.exe`。版本號從 `1.4.1`
+    調到 `1.5.0`(minor 版——部署設定有變動:新增 `EDGE_PROXY_SECRET`、需先部署 Edge
+    Function)。
+
+90. **語意搜尋失敗時降級為關鍵字搜尋**(`docs/specs/spec_search_degradation.md`,依 `/to-tickets` →
+    `/tdd` 流程實作,票在 `docs/tickets/search-degradation/issues/`)。問題:`searchArticles` 一定要先呼叫
+    Gemini 產生查詢向量,只要那一步失敗(配額 429、5xx、逾時、金鑰缺漏或失效),整個搜尋就失敗,
+    即使 Hybrid Search 裡關鍵字(`pg_trgm`)那一半根本不需要向量、資料庫也完全正常。做法:
+    (1) 公開 `searchArticles` 在「產生查詢向量」失敗時,改用**空向量(JSON `null`)**呼叫同一個
+    `hybrid_search_articles`,只取回關鍵字比對結果,並回傳 `degraded: true`。已用真實 PostgreSQL 16 +
+    pgvector 0.6.0 驗證:函式收到 NULL 向量時語意那一路自然為空、關鍵字那一路照常回傳,**不需要任何
+    schema 變更、不需要在 Supabase 執行任何 SQL**。(2) 降級**只**涵蓋產生向量這一步,但涵蓋該步驟
+    拋出的「任何」錯誤(含金鑰缺漏):設定錯誤若讓搜尋整個壞掉,團隊完全無法使用;若安靜降級,
+    擁有者永遠不知道金鑰壞了——所以前端提示一律顯示、原因寫進日誌(含錯誤分類與訊息,寫入前會遮蔽
+    API 金鑰字串,也不回傳給前端)。空向量之後的任何錯誤(RPC 失敗、補資料失敗、回傳非陣列)照舊拋出,
+    不被降級掩蓋。(3) 回傳形狀由「文章陣列」改為 `{ articles, degraded }`——`google.script.run` 會丟掉
+    掛在陣列上的屬性,所以不能用陣列屬性傳遞。檢索主體抽成內部函式 `searchArticlesInternal_`
+    並可指定是否允許降級;`askKnowledgeBase` 走**不允許降級**的路徑,embedding 失敗照舊報錯(RAG 拿到品質
+    低落的關鍵字結果會產生看似有依據、實則以偏概全的答案),既有 RagChat 測試斷言完全沒改。
+    (4) 輸入驗證、公開讀取節流、語意搜尋節流維持原位置與順序,降級模式同樣計數,不會變成繞過用量保護
+    的途徑;關鍵字門檻沿用現行預設、降級時不放寬。(5) 每次搜尋都會先重新嘗試產生向量(不做快取熔斷),
+    Gemini 恢復後下一次搜尋自動回到完整功能。(6) 前端:降級時在結果列表上方顯示不阻擋操作的提示
+    (固定文字、無重試按鈕——再按一次搜尋就是重試);降級且篩選後無結果時,空狀態改為專屬訊息,避免
+    使用者誤以為知識庫真的沒有相關文章;提示在每次新搜尋與回到一般列表時先清除,且顯示/隱藏受既有的
+    過期回應防護(序號比對)約束。**已知限制(誠實評估)**:降級模式的關鍵字那一路要求整篇(標題+內文)
+    trigram 相似度 ≥ 0.3,短查詢(例如「React」)可能回傳 0 筆——降級的價值是「長一點、貼近標題/內容的
+    查詢仍可用」與「不整個壞掉」,不是完整取代語意搜尋。另一個風險:Gemini 的失敗型態若是逾時,搜尋會
+    被拖慢後才降級(429/5xx 通常很快);若實際觀察到再考慮熔斷快取。**部署只需推送 GAS,不需任何資料庫
+    遷移。**實測(2026-10-01,擁有者):把 `GEMINI_API_KEY` 暫時改成無效值後搜尋,結果列表上方出現
+    「語意搜尋暫時無法使用,以下僅為關鍵字比對結果,結果可能較少。」提示,降級路徑在真實環境確認可用。
+    **尚未實測:**還原金鑰後提示消失、降級時搜尋短詞的專屬空狀態、降級時 AI 問答顯示原本的錯誤、
+    Apps Script 執行紀錄中的降級原因行(應不含金鑰)、快速連續搜尋不殘留舊提示。真實的 Gemini 429 /
+    逾時也沒有遇到過(擁有者表示使用的 embedding 模型負載輕,通常不會出錯),只用假的 `httpFetch_` 與
+    暫時改壞金鑰驗證。**版本號從 `1.5.0` 調到 `1.6.0`(新增使用者可見功能,無部署設定變動)。
+
+91. **AI 回答的「檢索到的相關文章」改為預設收合面板**(`docs/specs/spec_ai_sources_panel.md`,依
+    `/to-tickets` → `/tdd` 流程實作,票在 `docs/tickets/ai-sources-panel/issues/`)。問題:AI 問答每次回答後
+    會把**所有檢索到的文章標題**做成膠囊按鈕全部攤開,`askKnowledgeBase` 沒有指定筆數所以最多 20 篇,窄螢幕上
+    排成好幾列,把答案本身擠到一邊;而且這些文章是**檢索結果**、不是 Gemini 實際引用的(提示詞沒有要求
+    標註引用),舊的「來源」呈現容易讓人誤以為答案是逐篇根據這些文章得出的。做法:(1) 後端 `sources` 每個元素
+    由 `{ id, title }` 擴充為 `{ id, title, categoryName }`,分類名稱取自檢索補資料時已一併查回的
+    `categories` 關聯(不增加任何請求);未分類或分類名稱為空字串一律是 `null`。順序、數量、查無資料時
+    `sources` 為空陣列、提示詞、檢索與 Gemini 呼叫完全不變。(2) 前端改成原生 `<details>`(不帶 `open`,
+    預設收合),摘要「檢索到的相關文章(N)」,展開後是垂直列表,每列一個按鈕:標題為主要文字、分類為次要文字
+    (未分類時完全不渲染次要元素,不會有空白、分隔符或「null」);點擊呼叫既有的 `openArticleDetail`。
+    標題與分類一律用 `textContent`,不拼進 `innerHTML`。(3) 列的最小高度 44px、長標題自動換行
+    (`overflow-wrap: anywhere`)、摘要與列都有聚焦樣式;列表不設筆數上限,過長時由外層 `.ai-answer`
+    (`max-height: 60vh`)捲動;所有螢幕寬度同一套樣式。(4) 每次渲染新一輪回答都重新建立面板,所以每次
+    都回到收合;查無相關資料時完全不出現面板,`conversationHistory` 累積邏輯不變。舊的膠囊 class 與樣式已
+    移除,新樣式只用既有設計 token。**觀察(不在本次範圍)**:RAG 提示詞目前把檢索到的最多 20 篇文章全文(已於第 98 條處理)
+    塞給 Gemini,是 token 用量與回答雜訊的主要來源,之後可評估降低 RAG 專用的檢索筆數;若調整,面板的數量
+    (N)會自然變小。**實測(2026-10-01,擁有者):**AI 問答的回答與「檢索到的相關文章」面板在真實環境正常顯示。
+    **尚未實測:**約 375px 窄螢幕、檢索到 20 篇時可捲動不撐破版面、長標題換行、鍵盤展開與選取。`docs/preview/Preview.html` 是舊快照(沒有 AI 回答區塊),本次未重建。
+    版本號從 `1.6.0` 調到 `1.6.1`(patch:僅 AI 回答區塊的呈現調整,無部署設定變動)。
+
+92. **線上資料庫的 RLS 與 `docs/schema.sql` 不一致,已補開**(2026-10-01,Supabase 管理介面)。部署
+    Edge Function 時順帶檢查專案,Supabase 安全顧問對 `categories`、`tags`、`articles`、`article_tags`、
+    `attachments`、`attachment_folders` 六張表回報 critical:**Row Level Security 是關閉的**,代表任何
+    拿到專案 anon / publishable key 的人都能讀寫全部資料。`docs/schema.sql` 本來就有
+    `enable row level security`(縱深防禦,刻意不建 policy),但線上實際沒套用——schema 變更不會隨部署
+    自動套用的老問題。處理方式:以 migration `enable_rls_on_kb_tables` 補上與 schema 檔一致的六行
+    `alter table ... enable row level security`。開之前先確認資料庫沒有任何 policy、三個 RPC 都是
+    invoker(非 security definer);開啟後驗證:六張表 RLS 皆為開啟、以 anon 角色讀 `articles` 得到 0 筆、
+    以 service_role 仍讀得到全部資料,且代理(新版 secret key)與舊版 service_role 都會繞過 RLS,所以 app
+    功能不受影響,事後以代理操作 CRUD 與 Storage 皆無錯誤。**教訓:**每次部署或遷移後,在 Supabase 安全
+    顧問(Advisors)上看一次,確認線上狀態真的等於 schema 檔。顧問另有兩類 WARN 刻意未處理:四個函式的
+    `search_path` 未固定、`vector` 與 `pg_trgm` 擴充裝在 `public` 結構描述——修改這兩項要動 schema,有
+    破壞函式的風險,屬另一輪工作。同一輪另補強 GitHub 上傳用檔案:`.gitignore` 新增
+    `supabase/.temp/`、`supabase/.branches/`、`.env`、`.env.*`(Supabase CLI 的本地連結資訊與環境變數檔
+    不進版控,`test/GitignoreSupabase.test.js` 守住)。授權段落維持留空(未附加 LICENSE)。版本號
+    `1.6.1` → `1.6.2`(patch:維運 / 文件調整,無功能變動)。
+
+93. **第五輪 `/mycr` 全新掃描的修補(第一批:依賴與小型防禦)**(2026-10-02;報告
+    `.mycr/reports/mycr-20261002-002411.md`)。本輪不參考舊報告、整個 workspace 重掃,
+    沒有發現需要立刻處理的線上漏洞;這一批處理其中四項。(1) **DOMPurify 3.4.14 → 3.4.16**
+    (F-05):3.4.14 落在公告 GHSA-p98j-92pf-mc4p(`IN_PLACE` 模式下的 `afterSanitize*`
+    hook 會讓被移除的子樹保留事件處理器,DOM XSS)的受影響範圍。本專案只呼叫
+    `DOMPurify.sanitize(字串, 設定)`、沒有 `IN_PLACE` 也沒有 hook,所以**當時不可利用**;仍然升級,
+    因為它是專案唯一的 XSS 防線,且 `dependabot.yml` 刻意忽略它、不會有自動 PR 提醒。依既有流程
+    四處同步:`Index.html` 版本號 + SRI hash、`package.json`、`package-lock.json`。SRI hash
+    由 npm 套件內的 `dist/purify.min.js` 以 sha384 算出;方法先用 3.4.14 驗證過——算出的值與
+    `Index.html` 原本線上 CDN 的 hash 完全相同。**部署後請用瀏覽器開發者工具確認沒有 SRI 錯誤**
+    (我無法從沙箱連到 CDN 實測)。(2) **`npm audit fix`**(F-01):`brace-expansion` 兩個間接相依
+    (jest 工具鏈,不在部署包內)落在三則 DoS 公告範圍,lockfile 僅這兩個版本變動,audit 歸零。
+    (3) **`SUPABASE_URL` 必須是 https**(F-10):`getConfig_` 拒絕非 `https://` 開頭的值,
+    避免共用密鑰以明文送出;錯誤訊息只點名屬性,不回顯任何值。(4) **URL 型附件渲染時再驗證一次
+    協定**(F-12):寫入時本來就有兩道檢查,渲染端現在也套用同一個 `isSafeAttachmentUrl_`——
+    資料庫裡若出現 `javascript:` / `data:` 之類的值,只顯示純文字、不產生可點擊連結;正常連結
+    加上 `rel="noopener noreferrer"`。兩項程式變更都先寫失敗的測試(紅)再實作(綠)。
+    **尚未處理(第二批以後)**:F-04 代理共用密鑰最小長度、F-09 代理要求 PATCH/DELETE 帶篩選條件
+    (兩項都要改 `handler.ts`,**必須重新部署 Edge Function**,且部署前要先確認現有 `EDGE_PROXY_SECRET`
+    長度,否則整站會 500)、F-02 標籤同步的原子性、F-03 嵌入模型單筆輸入長度上限、其餘 Low 項。
+    版本號 `1.6.2` → `1.6.3`。
+
+94. **文件與 schema 校正為「從無到有佈建」**(2026-10-02)。專案目標是全新佈建、不是從舊版升級,
+    但 Edge Function 代理加入後,部分文件還留著升級思維或過期敘述。處理:(1) **`docs/schema.sql`
+    重整為最終狀態**:原本是多輪補丁堆疊——先建兩個單欄位 trigram 索引、檔尾再 `drop index` 並換成
+    一個運算式索引;`attachments.folder_id` 靠檔尾 `alter table` 補上;註解還寫「GAS 用
+    service_role key 存取」、儲存路徑慣例 `{uuid}_{file_name}`(實際是 `{uuid}.副檔名`),
+    `hybrid_search_articles` 的說明寫預設 0.6(實際預設 0.4)。現在資料表與欄位一次到位、只有一個
+    索引、沒有 `alter` / `drop`,RLS 段落改為描述現行的代理架構。**驗證**:在真實 PostgreSQL 16 +
+    pgvector 上,新舊兩版 `schema.sql` 的 `pg_dump --schema-only` 逐條比對完全相同(僅 pg_dump 每次
+    隨機產生的 `\restrict` 標記不同);並以唯讀查詢確認線上資料庫的欄位、限制、索引、觸發器、四個函式
+    預設值、RLS 皆與其一致。(2) **移除 README 的「既有部署的遷移步驟」**,把其中仍有價值的實測項目
+    改寫成「5. 部署後驗收」(新增 Advisors 與 bucket 私有性檢查);「快速開始」補上三個 RPC、RLS 與
+    bucket 必須為 private。(3) **`docs/DESIGN.md`**:決策表第 1 列「不做 RLS」與現況矛盾(實際是開啟 RLS
+    但不建 policy);第 2、17 列移除「原為直連、改為代理」的敘事;第 9 列與資料流的儲存路徑、3.1 節
+    PDF 的預覽方式(實際走 Google Docs Viewer,簽名網址預設 1 小時,而非原生 PDF 外掛 + 5 分鐘)與函式名稱
+    (`getTextAttachmentContent`,涵蓋 code 與 md\_file)全部對齊現況;架構圖補上 `attachment_folders`、
+    AI 問答與降級。(4) **`CLAUDE.md`**:明載「從無到有」原則;更正「前端沒有 DOM 行為測試」(實際有
+    jsdom 函式抽取測試);補上 `.github/`、`marked`/`dompurify` 版本四處同步的規則、Preview.html 是舊快照。
+    (5) **測試**:`test/EdgeFunctionProxyDocs.test.js` 原本**強制**README 保留遷移步驟(7 個編號步驟、順序
+    檢查),與上述方向直接衝突,已改為守「快速開始必須先部署代理、再推 GAS」與「現行文件不得殘留遷移 /
+    service_role 設定敘述」。**觀察(未處理)**:資料表與 RPC 函式對 `anon` / `authenticated` / `PUBLIC`
+    的預設授權仍在(Supabase 預設值;資料表有包含 `TRUNCATE` 的完整權限,RPC 有 `EXECUTE`)。因為 RLS 開啟且無
+    policy,經 API 讀寫不到任何資料,所以不構成漏洞;若要再加一層,可在 `schema.sql` 對這些角色 `revoke`,
+    這是新增的加固而非校正,需另外評估。
+
+95. **第五輪 `/mycr` 的修補(第二批:代理強化、輸入驗證與衛生)**(2026-10-02;依
+    `docs/tickets/mycr-round5-fixes/` 五張票,每張都是先寫失敗的測試再實作,並刻意改壞實作確認測試會變紅)。
+    (1) **代理強化(F-04、F-09)**:`EDGE_PROXY_SECRET` 短於 32 字元時,代理視為設定錯誤,對**所有**請求(含帶了正確
+    密鑰的)一律回 500 並點名「過短」、不轉發任何東西;這個檢查刻意放在比對呼叫端密鑰**之前**,否則猜中的人看到 500、
+    猜錯的人看到 401,等於告訴對方猜測是否命中。資料表的 PATCH / DELETE 必須帶至少一個 `eq.` 或 `in.(` 列篩選,否則 403
+    ——防止共用密鑰外洩或 GAS 日後出錯時「一個請求清空整張表」;`?select=eq.x` 這類只是參數值長得像篩選的不算。GAS 現有每個
+    PATCH / DELETE 本來就帶篩選,另有 Jest 靜態比對守住日後新增的呼叫點。**這批改了 `handler.ts`,必須重新部署
+    Edge Function**(線上是獨立拷貝,可用 `get_edge_function` 讀回比對)。(2) **附件 Storage 路徑(F-06)**:副檔名只接受
+    1–10 個英數字元,其他情況(含空白、`?`、`#`、`%`、斜線、非 ASCII、過長)一律當成無副檔名,**不擋上傳**,原始檔名仍完整
+    保留在 `file_name`;`articleId` 必須是 UUID,否則在送出任何請求之前就拒絕;四個 Storage 函式把路徑每一段做 URL 編碼。
+    副檔名函式 `fileExtension_` 搬到 `AttachmentTypes.gs`,與類型偵測、content-type 判斷共用同一份邏輯。(3) **AI 回應過期防護
+    (F-07)**:使用者清空搜尋後,晚到的舊回應不再被推進對話歷史(原本會被當成上下文送給下一次提問);兩個搜尋重疊時也只有
+    仍在畫面上的那一輪進入歷史。(4) **公開讀取輸入驗證(F-13)**:`listArticles` 的 `limit` 夾到 1–100(無效時預設 50)、
+    `offset` 只接受正整數、`tagIds` 必須是陣列;`searchArticles` 的 `tagIds` 同樣處理。不合法的輸入得到一致的安全行為,不再
+    把原始 `TypeError` 訊息丟給匿名訪客。(5) **刪除文章時 Storage 檔案刪除失敗(F-15)**:仍不中斷刪除,但現在會在日誌
+    留下附件路徑,方便事後手動清理孤兒檔案。(6) **CI 與衛生(F-17)**:job 加 `timeout-minutes: 10`、`setup-node` 啟用 npm
+    快取;`CLAUDE.md` 記載 `var` 是刻意慣例;**刪除 `docs/preview/Preview.html`**(早已過期的舊快照,載入未鎖版本且無 SRI 的
+    CDN)及只為它存在的測試,現行文件不再提它。(7) **刻意沒做**:F-16(重複常數,等改到相關程式時順手處理);
+    `deleteAttachment_` 的刪除順序(行為改動,只補日誌)。**仍待處理**:F-02 標籤同步的原子性(已決定走
+    `replace_article_tags` RPC,待 grilling 收尾後走 spec → tickets)、F-03 嵌入模型單筆輸入長度(待實測)、F-14 + F-08(已於第 98 條處理)
+    RAG 檢索成本、F-11 manifest 最小權限(可選)。**部署時**:先重新部署 Edge Function(代理),再 `clasp push` 並發新版
+    Web App。版本號 `1.6.3` → `1.6.4`。
+
+96. **分段向量與原子寫入**(`docs/specs/spec_chunked_embeddings.md`,依 `/grilling` → `/to-spec` →
+    `/to-tickets` → `/tdd` 走完,票在 `docs/tickets/chunked-embeddings/`,10 張)。關閉 mycr 第五輪的 F-02 與 F-03。
+    **問題**:(1) 每篇文章只存一個向量,但嵌入模型單筆輸入上限約 2,048 token,超過的部分被**靜默截斷**。2026-10-02
+    在線上實測確認(兩個互不相干的主題「烹飪」「天文」各排一篇約 14,900 字長文,另有純主題短文當對照):
+    「烹飪→天文」那篇離純烹飪 0.046、離純天文 0.364;「天文→烹飪」反過來(0.039 / 0.362);純烹飪與純天文本來就相距 0.351
+    ——所以長文後半段對向量的貢獻是零,長文寫了卻搜不到、也沒有任何提示。(2) 標籤同步是「先刪光再插入」兩個獨立請求,中途失敗
+    會讓內容更新但標籤全部消失;標籤合併是逐篇多步驟流程。**做法**:新資料表 `article_chunks`,每篇已發布文章切成多段
+    (每段最多約 1,500 字,優先在段落邊界切、不重疊,每段嵌入時前面加標題;存段落**文字**而非起訖位置;上限 40 段,
+    超過在呼叫 Gemini 之前就拒絕並說明),**每段各有一個向量**;`hybrid_search_articles` 的語意那一路與
+    `related_articles` 改取「該文章最接近的那一段」,`articles.embedding` 與它的索引移除;命中的段落序號與文字一併回傳,
+    為之後「AI 問答只送命中段落」預先備好(本次 GAS 不使用)。文章欄位、狀態、整批段落、整組標籤的寫入收進**一個**
+    RPC `save_article`(單一交易,任何一步失敗整筆回滾;各部分獨立可選;只改標籤 / 分類或只重建段落時不帶 `p_fields`,
+    `updated_at` 不被動到),標籤合併收進 `merge_tags`。GAS 的建立 / 更新 / 發布 / 取消發布一律只送一個
+    `save_article`:Gemini 先於任何寫入呼叫,新標籤在 Gemini 成功之後才建立,失敗時資料庫完全沒被動到。批次嵌入用
+    `batchEmbedContents`(官方文件明載回傳依請求順序),單次批次大小是一個常數、超過自動分批。取消發布時段落保留(搜尋本來就只看
+    已發布),重新發布時整批重算覆蓋。**資料庫衛生**:`vector`、`pg_trgm` 搬到 `extensions` schema(型別與運算子類別用
+    全限定名稱),所有函式固定 `search_path = public, extensions`(沒有它,SQL 函式在建立時就無法解析 `<=>`),每張表開
+    RLS 且無 policy。**重建工具**:`tools/Reindex.gs`(不在 `src/`、用完即刪、入口函式不帶底線所以有三道防護:
+    `REINDEX_ENABLED` 開關〔試跑也要〕、完成後自動刪除該 Property、不回傳資料),`articles_needing_reindex(模型)` 依
+    `embedding_model` 判斷待重建,可中斷續跑、約 5 分鐘自動停下、遇 429 優雅停止、超過 40 段的只記錄。`tools/VerifyBatchEmbedding.gs`
+    用真實金鑰實測批次嵌入的順序與單次筆數上限(**2026-10-03 已實測**:順序一致、40 / 41 筆可行;100 筆的失敗是 HTTP 429 額度錯誤,不是筆數上限——免費層每分鐘 100 個請求,每一段文字算一個請求〔推論〕,見快速開始的「Gemini 額度」)。第一版驗證工具因為呼叫了新版才有的函式,在尚未上線的專案裡出現 `ReferenceError`,已改為完全獨立。**代理**:`ALLOWED_RPCS` 新增 `merge_tags`、`save_article`、
+    `articles_needing_reindex`;`article_chunks` 刻意不在資料表白名單(測試明列「刻意不開放」清單)——**必須重新部署
+    Edge Function**。**新的測試接縫**:SQL 整合測試(`test/sql/`,對真實 PostgreSQL + pgvector,`TEST_DATABASE_URL` 啟用、
+    未設定自動跳過,CI 以 `pgvector/pgvector:pg16` 服務容器真的跑),每個測試檔自己的臨時資料庫,向量用手工構造的軸向量;
+    每項行為都刻意改壞實作確認會變紅,過程抓到幾個測試盲點(例如把語意預設門檻改成 0.9,原本 20 個測試居然全過,補上邊界測試後才變紅)。
+    **已知限制 / 後續**:關鍵字那一路仍拿整篇做 trigram 比對,對長文偏弱;0.4 / 0.6 兩個門檻原本用整篇向量校準,段落化後
+    需用真實資料再量測;AI 問答仍送整篇全文(F-14 另議,已於第 98 條處理)。**線上上線**:資料庫與程式必須一起換,中間有短暫停機
+    (不做相容層);步驟見 `docs/tickets/chunked-embeddings/rollout/`,migration 是**一次性**的(`migration.sql`,
+    有測試證明「舊 schema + migration = 全新 schema」且資料完整保留),不是專案的升級機制。版本號 `1.6.4` → `1.7.0`。
+
+97. **分段向量上線與第一次門檻量測**(2026-10-08;紀錄在 `docs/tickets/chunked-embeddings/issues/10-rollout-and-measure.md`)。
+    **上線**:套用前以同一支指紋 SQL 核對線上結構等於升級前的 schema → 以 `apply_migration` 一次成功套用(單一交易;資料筆數 23 / 4 / 20 / 25 / 6
+    前後相同)→ 結構與全新載入 `schema.sql` 逐項相同 → 部署代理(版本 13,讀回逐行一致)→ 擁有者 `clasp push` 並發新版 → 重建工具試跑(20 篇、47 段)
+    與正式執行(一次完成,`REINDEX_ENABLED` 自動刪除)。上線後的代理日誌零個 4xx / 5xx;重建期間沒有任何文章的 `updated_at` 被動到。
+    **F-03 的端到端證明(真實 Gemini 向量)**:長文後半段對後半主題的距離從 0.364 / 0.362(與不相干主題無異,找不到)變成 0.067 / 0.097;實際呼叫
+    `hybrid_search_articles`,以天文短文當查詢找到「先烹飪、後天文」長文的第 7 段、以烹飪短文當查詢找到「先天文、後烹飪」長文的第 6 段。
+    **這次上線中修掉的問題**:(1) 第一版 `VerifyBatchEmbedding.gs` 呼叫了新版才有的函式,在尚未上線的專案裡出現 `ReferenceError`——改為完全獨立,並寫明
+    `Reindex.gs` 必須在新版上線之後才能上傳;(2) 驗證工具把 HTTP 429(免費層每分鐘 100 個請求的額度)記成「失敗」且未區分原因,容易誤判為筆數上限——已改為辨識
+    429 並明說,重建工具的 429 訊息也補上額度說明。**門檻量測(決策 23)**:不相干主題的距離 0.351 低於搜尋門檻 0.4;相關文章門檻 0.6 在這批資料上沒有任何過濾效果
+    (190 對文章 100% 低於它),但線上幾乎都是極短的測試文,不能據此調整——**維持 0.4 / 0.6**,等累積約 30 篇真實文章後用 `rollout/measure-thresholds.sql`(唯讀)重新量測。
+    **收尾**:一次性的 migration 等價性測試移除(`migration.sql` 與 `schema-before.sql` 留在 `rollout/` 當歷史);待擁有者確認:刪除 `Reindex.gs` 與 4 篇 F03 測試文章、
+    實際操作一輪寫入路徑(新增草稿 / 改標籤 / 發布 / 合併標籤)。**已知限制 / 後續**:關鍵字那一路仍拿整篇做 trigram 比對;AI 問答仍送整篇全文(F-14,已於第 98 條處理);
+    npm 新公告 `sprintf-js`(F-18,開發工具鏈,尚無修正版本)待上游修正。
+
+98. **AI 問答改送節錄,同一個查詢只嵌入一次**(2026-10-17;`docs/specs/spec_rag_excerpts.md`,依 `/grilling` → `/to-spec` →
+    `/to-tickets` → `/tdd` 完成,票在 `docs/tickets/rag-excerpts/issues/`;關閉第五輪 `/mycr` 的 **F-14**、**F-08**)。
+    **F-14**:`askKnowledgeBase` 以前把最多 20 篇文章的 `content_md` 全文塞進提示詞(一篇 6 萬字就是 6 萬字),成本高、答案被不相關內容稀釋。
+    現在最多檢索 8 篇,每篇只送資料庫已算出的**命中段落**(標示「第 N 段」);只被關鍵字命中的送文章開頭最多 1,500 字(標示「文章開頭」,
+    不切斷代理對);提示詞新增「參考內容是節錄、資料不足請明說」規則,既有的「當資料、不是指令」防護不變。最壞情況的參考內容從「20 篇全文」降到約
+    1.2 萬字。命中段落以 `matchedChunk` 在內部往上傳,公開的 `searchArticles` 會剝除它;來源面板仍只列文章。
+    **F-08**:搜尋時文章列表與 AI 問答是同一句查詢,以前各自呼叫一次 Gemini 嵌入。現在有 60 秒的**查詢向量快取**(`CacheService`,鍵是含模型識別字串的
+    SHA-256 雜湊,不含查詢明文;快取讀寫的任何例外都吞掉、退回照舊呼叫 Gemini;Gemini 失敗不快取),前端改成**列表請求完成後才發 AI 請求**,
+    語意搜尋節流只在快取未命中時計數。`askKnowledgeBase` 不再消耗匿名訪客共用的公開讀取額度——做法是 `searchArticlesInternal_` 的**第四個內部參數**,
+    **絕不從呼叫端可控的 `opts` 讀取**(否則任何人傳 `{ skipPublicReadRateLimit: true }` 就能繞過節流),測試涵蓋多種同義鍵。
+    **取捨 / 已知限制**:節錄比整篇更容易以偏概全(所以提示詞要求不足請明說);AI 回答比列表晚約 1~2 秒開始,且這段時間內畫面上仍留著上一輪的 AI 回答;
+    搜尋補資料仍會讀每篇的 `content_md` 全文(Supabase 到 GAS 之間,不影響 Gemini 成本);命中段落加前後文、重新校準 0.4 / 0.6 門檻留待另案。
+    測試輔助 `fakeCacheService` 新增虛擬時鐘(TTL)、100 KB 值上限與故障注入,`fakeUtilities` 新增 `computeDigest`,既有測試不受影響。
+    版本號 `1.7.0` → `1.7.1`(patch:AI 問答的提示詞與搜尋額度行為調整,無部署設定、無 schema 變動)。
 
 ## 開發過程文件
 
 這個專案是透過 `/grilling`(架構訪談)→ `/to-spec`(規格書)→
 `/to-tickets`(任務拆解)→ `/tdd`(紅綠重構)的流程逐步建置的。後端走真正的
-行為測試紅綠循環;前端(從響應式版型這一輪開始)走靜態文字掃描測試的紅綠循環,
-細節見上方「前端測試方式的說明」。完整的決策脈絡與每個功能的取捨理由都留在
+行為測試紅綠循環;前端(從響應式版型這一輪開始)走靜態文字掃描,較新的功能再加上
+jsdom 行為測試,細節見上方「前端測試方式的說明」。完整的決策脈絡與每個功能的取捨理由都留在
 `docs/` 底下,包含:
 
 - 每一份 spec 的 *Implementation Decisions* 段落記錄了具體技術選擇跟理由

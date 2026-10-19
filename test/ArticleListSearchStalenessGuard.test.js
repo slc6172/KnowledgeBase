@@ -36,6 +36,7 @@ function extractFunction(fnName) {
 function buildSandbox() {
   const dom = new JSDOM(
     '<!doctype html><html><body>' +
+      '<div id="search-degraded-notice" class="hidden"></div>' +
       '<div id="article-list-results"></div>' +
       '<button id="btn-search"></button>' +
       '</body></html>'
@@ -84,6 +85,7 @@ function buildSandbox() {
 
   var source = [
     extractFunction("setSearchBusy"),
+    extractFunction("setSearchDegradedNotice"),
     extractFunction("renderArticleCards"),
     extractFunction("loadArticleList"),
     extractFunction("performSearch")
@@ -132,7 +134,7 @@ describe("mycr F-06 fix: the article list/search results always end up matching 
     expect(searchCall).toBeDefined();
 
     // 比較晚呼叫的 performSearch 反而先回應,比較早呼叫的 loadArticleList 才晚到
-    searchCall.resolve([fakeArticle("s1", "search result")]);
+    searchCall.resolve({ articles: [fakeArticle("s1", "search result")], degraded: false });
     listCall.resolve([fakeArticle("l1", "browse result")]);
 
     expect(cardsText(sandbox)).toContain("search result");
@@ -150,7 +152,7 @@ describe("mycr F-06 fix: the article list/search results always end up matching 
     var searchCall = sandbox.calls.filter(function (c) { return c.fn === "searchArticles"; })[0];
 
     listCall.resolve([fakeArticle("l1", "browse result")]);
-    searchCall.resolve([fakeArticle("s1", "search result")]);
+    searchCall.resolve({ articles: [fakeArticle("s1", "search result")], degraded: false });
 
     expect(cardsText(sandbox)).toContain("browse result");
     expect(cardsText(sandbox)).not.toContain("search result");

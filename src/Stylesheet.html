@@ -486,15 +486,53 @@
     line-height: 1.6;
     margin-bottom: 0.8rem;
   }
-  .ai-answer__sources {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+  /* 「檢索到的相關文章」面板(原生 <details>,預設收合)。所有螢幕寬度同一套樣式;
+     展開後的列表不設筆數上限,過長時由外層 .ai-answer(max-height: 60vh)捲動。 */
+  .ai-sources {
+    border-top: 1px solid var(--color-border);
+    padding-top: 0.4rem;
   }
-  .ai-answer__source {
-    font-size: 0.82rem;
-    padding: 0.3rem 0.7rem;
-    border-radius: 999px;
+  .ai-sources__summary {
+    cursor: pointer;
+    color: var(--color-ink-muted);
+    font-size: 0.9rem;
+    padding: 0.5rem 0;
+    border-radius: var(--radius);
+  }
+  .ai-sources__summary:hover { color: var(--color-ink); }
+  .ai-sources__summary:focus-visible,
+  .ai-sources__item:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+  .ai-sources__list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.3rem;
+  }
+  .ai-sources__item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.5rem 0.8rem;
+    text-align: left;
+    font-family: var(--font-body);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    color: var(--color-ink);
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .ai-sources__item:hover { background: var(--color-primary-soft); }
+  .ai-sources__title { font-size: 0.92rem; }
+  .ai-sources__category {
+    font-size: 0.78rem;
+    color: var(--color-ink-muted);
   }
 
   /* 勾選模式下,文章卡片左上角的 checkbox——放大本體 + 加大可點擊 padding,
@@ -510,6 +548,17 @@
     transform: scale(1.6);
     transform-origin: top left;
     cursor: pointer;
+  }
+
+  /* 搜尋降級提示:在結果列表上方的一般流內區塊,不遮蓋、不阻擋任何操作 */
+  .search-degraded-notice {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    color: var(--color-ink-muted);
+    font-size: 0.9rem;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 1rem;
   }
 
   /* 文章列表分頁 */

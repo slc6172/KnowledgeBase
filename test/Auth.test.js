@@ -133,9 +133,9 @@ describe("callProtected", () => {
     fakeConfigWithWritePassword("correct-horse");
     const fetchSpy = jest
       .fn()
-      // createArticle 內部:insert articles
+      // createArticle 內部:一個 save_article RPC(文章欄位 + 標籤在資料庫的單一交易內寫入)
       .mockReturnValueOnce(
-        fakeResponse(201, '[{"id":"a1","title":"t","content_md":"body","category_id":null,"status":"draft"}]')
+        fakeResponse(200, '{"id":"a1","title":"t","content_md":"body","category_id":null,"status":"draft"}')
       )
       // createArticle 內部:getArticle(a1) 補查詢
       .mockReturnValueOnce(
@@ -152,7 +152,7 @@ describe("callProtected", () => {
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      "https://x.supabase.co/rest/v1/articles",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/save_article",
       expect.objectContaining({ method: "POST" })
     );
     expect(result).toEqual({
@@ -177,7 +177,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "moveCategory", ["c2", null]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/categories?id=eq.c2",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/categories?id=eq.c2",
       expect.objectContaining({
         method: "PATCH",
         payload: JSON.stringify({ parent_id: null })
@@ -197,7 +197,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "renameTag", ["t1", "JavaScript"]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?id=eq.t1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?id=eq.t1",
       expect.objectContaining({ method: "PATCH" })
     );
     expect(result.name).toBe("JavaScript");
@@ -215,7 +215,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "createFolder", ["a1", "設計稿"]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders",
       expect.objectContaining({
         method: "POST",
         payload: JSON.stringify([{ article_id: "a1", name: "設計稿" }])
@@ -248,7 +248,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "renameFolder", ["f1", "設計稿 v2"]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders?id=eq.f1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders?id=eq.f1",
       expect.objectContaining({ method: "PATCH" })
     );
     expect(result.name).toBe("設計稿 v2");
@@ -262,7 +262,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "deleteFolder", ["f1"]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/attachment_folders?id=eq.f1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/attachment_folders?id=eq.f1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(result).toEqual({ deleted: true, id: "f1" });
@@ -276,7 +276,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "deleteTag", ["t1"]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/tags?id=eq.t1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/tags?id=eq.t1",
       expect.objectContaining({ method: "DELETE" })
     );
     expect(result).toEqual({ deleted: true, id: "t1" });
@@ -288,14 +288,15 @@ describe("callProtected", () => {
       .fn()
       .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-source","name":"JS"}]')) // findTagOrThrow_(sourceTagId)
       .mockReturnValueOnce(fakeResponse(200, '[{"id":"t-target","name":"JavaScript"}]')) // findTagOrThrow_(targetTagId)
-      .mockReturnValue(fakeResponse(200, "[]"));
+      .mockReturnValue(fakeResponse(200, '{"id":"t-target","name":"JavaScript"}'));
     global.httpFetch_ = fetchSpy;
 
     callProtected("correct-horse", "mergeTags", ["t-source", "t-target"]);
 
+    // 真正的合併由資料庫的 merge_tags 函式在單一交易內完成(spec_chunked_embeddings 票 02)
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/article_tags?tag_id=eq.t-source",
-      expect.objectContaining({ method: "GET" })
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/rpc/merge_tags",
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -320,7 +321,7 @@ describe("callProtected", () => {
     const result = callProtected("correct-horse", "batchSetArticlesCategory", [["a1"], "cat-x"]);
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://x.supabase.co/rest/v1/articles?id=eq.a1",
+      "https://x.supabase.co/functions/v1/kb-proxy/rest/v1/articles?id=eq.a1",
       expect.objectContaining({ method: "PATCH" })
     );
     expect(result).toEqual({ succeeded: ["a1"], failed: [] });
@@ -386,20 +387,20 @@ describe("callProtected", () => {
     const base64Data = Buffer.from("hi").toString("base64");
     const fetchSpy = jest
       .fn()
-      .mockReturnValueOnce(fakeResponse(200, '{"Key":"a1/uuid-dispatch.png"}'))
+      .mockReturnValueOnce(fakeResponse(200, '{"Key":"44444444-4444-4444-8444-444444444444/uuid-dispatch.png"}'))
       .mockReturnValueOnce(
-        fakeResponse(201, JSON.stringify([{ id: "att-1", article_id: "a1", type: "photo" }]))
+        fakeResponse(201, JSON.stringify([{ id: "att-1", article_id: "44444444-4444-4444-8444-444444444444", type: "photo" }]))
       );
     global.httpFetch_ = fetchSpy;
 
     const result = callProtected("correct-horse", "uploadAttachmentFile", [
-      "a1",
+      "44444444-4444-4444-8444-444444444444",
       "cat.png",
       base64Data,
       "image/png"
     ]);
 
-    expect(result).toEqual({ id: "att-1", article_id: "a1", type: "photo" });
+    expect(result).toEqual({ id: "att-1", article_id: "44444444-4444-4444-8444-444444444444", type: "photo" });
   });
 
   test("dispatches to the real addAttachmentUrl when password and functionName are valid", () => {
