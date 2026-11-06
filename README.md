@@ -2131,7 +2131,7 @@ Edge Function 代理的測試是獨立的 Deno 測試(`deno test supabase/functi
     測試輔助 `fakeCacheService` 新增虛擬時鐘(TTL)、100 KB 值上限與故障注入,`fakeUtilities` 新增 `computeDigest`,既有測試不受影響。
     版本號 `1.7.0` → `1.7.1`(patch:AI 問答的提示詞與搜尋額度行為調整,無部署設定、無 schema 變動)。
 
-## 開發過程文件
+## 開發過程文件(供參)
 
 這個專案是透過 `/grilling`(架構訪談)→ `/to-spec`(規格書)→
 `/to-tickets`(任務拆解)→ `/tdd`(紅綠重構)的流程逐步建置的。後端走真正的
